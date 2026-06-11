@@ -36,6 +36,10 @@ TILE_PROBABILITY=25           # percent chance a tick tiles two apps vs single f
 MENU_BAR_INSET=25             # px reserved at top of screen when tiling
 ENABLE_TAB_SWITCH=true        # switch tabs for dictionary-scriptable apps (Safari)
 ENABLE_KEYBOARD_TAB_CYCLE=false  # opt-in: synthetic app-hotkey tab cycling (Ghostty/Code/DBeaver)
+ENABLE_MOUSE_JIGGLE=false     # opt-in: imperceptible cursor nudge each tick to reset the
+                              # HID idle timer (look "present" to Slack/idle timers).
+                              # Synthetic input; requires cliclick (brew install cliclick).
+MOUSE_JIGGLE_PX=1             # pixels to nudge before restoring the cursor
 EXCLUDE_APPS=()               # app/process names never selected (empty per requirements)
 LOG_FILE="${AWAKE_LOG_FILE:-}"   # empty => stdout only
 
@@ -209,6 +213,45 @@ EOF
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Mouse jiggle — reset the HID idle timer so apps see you as "present".
+#
+# This is the one capability osascript cannot reach: there is no native
+# "move cursor" in AppleScript, and CGWarpMouseCursorPosition does NOT reset
+# the idle timer. cliclick's `m:` posts a REAL CGEvent, which does. So this is
+# synthetic input — opt-in (ENABLE_MOUSE_JIGGLE) and labeled, like the keyboard
+# tab cycle above.
+# ---------------------------------------------------------------------------
+
+_have_cliclick() { command -v cliclick >/dev/null 2>&1; }
+
+# Seconds since the last real HID input event (0 on failure). nanoseconds/1e9.
+hid_idle_seconds() {
+  ioreg -c IOHIDSystem 2>/dev/null \
+    | awk '/HIDIdleTime/ {printf "%d\n", $NF/1000000000; exit}'
+}
+
+# The jiggle mechanism: nudge the cursor MOUSE_JIGGLE_PX and restore it to the
+# exact original spot (imperceptible). No flag check here so jiggle_test can
+# call it directly. Returns non-zero (and logs) on any expected failure.
+_do_jiggle() {
+  _have_cliclick || { log "  mouse-jiggle skipped (cliclick not installed: brew install cliclick)"; return 1; }
+  local pos x y
+  pos=$(cliclick p 2>/dev/null)   # prints "x,y"
+  x=${pos%,*}; y=${pos#*,}
+  case "$x" in ''|*[!0-9-]*) log "  mouse-jiggle: could not read cursor position ('$pos')"; return 1 ;; esac
+  case "$y" in ''|*[!0-9-]*) log "  mouse-jiggle: could not read cursor position ('$pos')"; return 1 ;; esac
+  cliclick "m:$((x + MOUSE_JIGGLE_PX)),$y" "m:$x,$y" >/dev/null 2>&1 \
+    || { log "  mouse-jiggle: cliclick move failed"; return 1; }
+  return 0
+}
+
+# Opt-in wrapper called from the rotation loop.
+mouse_jiggle() {
+  [ "$ENABLE_MOUSE_JIGGLE" = true ] || return 0
+  _do_jiggle && log "  mouse-jiggle: nudged ${MOUSE_JIGGLE_PX}px & restored (synthetic input; HID idle reset)"
+}
+
 # After focusing an app, reach as deep as that app legitimately allows.
 dispatch_deep() {
   local app="$1"
@@ -276,6 +319,38 @@ probe() {
 }
 
 # ---------------------------------------------------------------------------
+# Jiggle test — prove the cursor nudge actually resets the HID idle timer.
+# The real success criterion is "idle dropped to ~0", not "the cursor moved".
+# ---------------------------------------------------------------------------
+jiggle_test() {
+  log "=== mouse-jiggle test ==="
+  if ! _have_cliclick; then
+    log "cliclick not found. Install it first:  brew install cliclick"
+    exit 1
+  fi
+  log "Don't touch the mouse/keyboard during the countdown (let idle accrue)."
+  local i
+  for i in 3 2 1; do log "  measuring in ${i}s..."; sleep 1; done
+
+  local before after
+  before=$(hid_idle_seconds)
+  log "HID idle BEFORE jiggle: ${before}s"
+  if ! _do_jiggle; then
+    log "RESULT: ❌ jiggle could not run (see message above)."
+    exit 1
+  fi
+  after=$(hid_idle_seconds)
+  log "HID idle AFTER  jiggle: ${after}s"
+
+  if [ "${after:-9}" -lt "${before:-0}" ] || [ "${after:-9}" -le 0 ]; then
+    log "RESULT: ✅ idle timer reset — apps will see you as present."
+  else
+    log "RESULT: ⚠️  idle did not drop. Check Accessibility permission for this"
+    log "        terminal and that cliclick can post events."
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 cleanup() { echo; log "awake stopped."; exit 0; }
@@ -283,7 +358,7 @@ cleanup() { echo; log "awake stopped."; exit 0; }
 run_loop() {
   trap cleanup INT TERM
   log "awake started (pid $$). Ctrl+C to stop."
-  log "sleep ${MIN_SLEEP}-${MAX_SLEEP}s | tile ${TILE_PROBABILITY}% | tab-switch ${ENABLE_TAB_SWITCH} | kbd-tab-cycle ${ENABLE_KEYBOARD_TAB_CYCLE}"
+  log "sleep ${MIN_SLEEP}-${MAX_SLEEP}s | tile ${TILE_PROBABILITY}% | tab-switch ${ENABLE_TAB_SWITCH} | kbd-tab-cycle ${ENABLE_KEYBOARD_TAB_CYCLE} | mouse-jiggle ${ENABLE_MOUSE_JIGGLE}"
 
   while true; do
     local apps=() line n roll a b app
@@ -312,6 +387,10 @@ run_loop() {
       dispatch_deep "$app"
     fi
 
+    # Reset the HID idle timer (opt-in). Jiggling every MIN_SLEEP-MAX_SLEEPs
+    # keeps idle under MAX_SLEEP (<=60s), well below typical 5-min "away" cutoffs.
+    mouse_jiggle
+
     sleep_random
   done
 }
@@ -323,6 +402,7 @@ awake.sh — macOS app-control experiment
 USAGE:
   ./awake.sh            Start the random focus/tile rotation loop (Ctrl+C to stop)
   ./awake.sh --probe    Print a live capability map for the target apps and exit
+  ./awake.sh --jiggle-test  Prove the mouse jiggle resets the HID idle timer
   ./awake.sh --help     Show this help
 
 TUNABLES (edit the Config block at the top of the script):
@@ -331,6 +411,10 @@ TUNABLES (edit the Config block at the top of the script):
   ENABLE_TAB_SWITCH            switch Safari tabs via its dictionary (default true)
   ENABLE_KEYBOARD_TAB_CYCLE    opt-in synthetic-hotkey tab cycling for apps with
                                no dictionary, e.g. Ghostty/VS Code (default false)
+  ENABLE_MOUSE_JIGGLE          opt-in imperceptible cursor nudge each tick to reset
+                               the HID idle timer / look "present" (default false;
+                               needs cliclick: brew install cliclick)
+  MOUSE_JIGGLE_PX              pixels to nudge before restoring the cursor (default 1)
   EXCLUDE_APPS                 app names to never select
   AWAKE_LOG_FILE (env)         also append logs to this file
 
@@ -346,6 +430,7 @@ USAGE
 main() {
   case "${1:-}" in
     --probe) probe ;;
+    --jiggle-test) jiggle_test ;;
     -h|--help) usage ;;
     "") run_loop ;;
     *) usage; exit 2 ;;

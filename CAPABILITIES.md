@@ -43,6 +43,16 @@ Notes / surprises (e.g. did VS Code tiling actually take? did DBeaver windows ra
 
 - …
 
+## Mouse / idle timer
+
+Moving the cursor is the one action with **no** AppleScript surface — `osascript`
+has no native "move mouse". A real move needs `cliclick` (or `CGEventPost`). Note
+the trap: `CGWarpMouseCursorPosition` *teleports* the cursor but does **not**
+reset the HID idle timer, so apps still consider you away. `cliclick m:` posts a
+real `CGEvent`, which **does** reset it. So "look present" is reachable, but only
+via genuine posted input — gated behind `ENABLE_MOUSE_JIGGLE` and provable with
+`./awake.sh --jiggle-test` (idle before vs after).
+
 ## Takeaway
 
 The robust path is **not** generic faked input — it's each app's *real* automation

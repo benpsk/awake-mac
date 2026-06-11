@@ -25,10 +25,27 @@ a live capability map so you can see exactly what each app on *your* machine all
 ```bash
 chmod +x awake.sh
 
-./awake.sh            # start the random focus / tile rotation (Ctrl+C to stop)
-./awake.sh --probe    # print a capability map for the target apps and exit
-./awake.sh --help     # show help
+./awake.sh              # start the random focus / tile rotation (Ctrl+C to stop)
+./awake.sh --probe      # print a capability map for the target apps and exit
+./awake.sh --jiggle-test # prove the mouse jiggle resets the HID idle timer
+./awake.sh --help       # show help
 ```
+
+## Staying awake: sleep vs presence
+
+Two different problems, two different tools:
+
+- **Stop the Mac sleeping** → use the built-in `caffeinate` (no input faked,
+  no Accessibility needed): `caffeinate -dimsu ./awake.sh`.
+- **Look *active/present*** to apps (Slack green dot, corporate idle timers) →
+  those watch the **HID idle timer**, which `caffeinate` does *not* reset. Only
+  a real input event does. `ENABLE_MOUSE_JIGGLE` (below) nudges the cursor 1px
+  and restores it each tick, which posts a real event and resets the timer.
+  This is synthetic input, so it is **off by default and labeled in the logs**,
+  like `ENABLE_KEYBOARD_TAB_CYCLE`. Requires `cliclick` (`brew install cliclick`).
+
+Run `./awake.sh --jiggle-test` to confirm it works: it prints the idle time
+before and after a jiggle — a pass means idle dropped to ~0.
 
 Run `--probe` first (with Safari, Ghostty, DBeaver, VS Code open) to confirm what
 your machine exposes, then paste the table into [`CAPABILITIES.md`](./CAPABILITIES.md).
@@ -44,6 +61,8 @@ Edit the **Config block** at the top of `awake.sh`:
 | `MENU_BAR_INSET` | `25` | Pixels reserved at the top of the screen when tiling |
 | `ENABLE_TAB_SWITCH` | `true` | Switch Safari tabs via its AppleScript dictionary |
 | `ENABLE_KEYBOARD_TAB_CYCLE` | `false` | **Opt-in.** Synthetic app-hotkey tab cycling for apps with no dictionary (Ghostty/VS Code/DBeaver). Keymaps are best-guesses — adjust to your bindings. |
+| `ENABLE_MOUSE_JIGGLE` | `false` | **Opt-in.** Imperceptible 1px cursor nudge each tick that resets the HID idle timer (look "present"). Synthetic input; needs `cliclick`. |
+| `MOUSE_JIGGLE_PX` | `1` | Pixels to nudge before restoring the cursor to its exact original spot. |
 | `EXCLUDE_APPS` | `()` | App/process names to never select |
 | `AWAKE_LOG_FILE` (env) | unset | Also append timestamped logs to this file |
 
