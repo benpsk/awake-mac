@@ -19,6 +19,8 @@ a live capability map so you can see exactly what each app on *your* machine all
   System Settings → Privacy & Security → Accessibility → enable Terminal / Ghostty / iTerm.
   The first `osascript` call that drives another app will prompt for this.
   Without it, System Events calls silently do nothing.
+- **`cliclick`** — only for the optional mouse jiggle (`ENABLE_MOUSE_JIGGLE`):
+  `brew install cliclick`. Not needed for focus/window/tile rotation.
 
 ## Usage
 
@@ -61,6 +63,13 @@ app hotkeys:
 
 ```bash
 MIN_SLEEP=3 MAX_SLEEP=6 TILE_PROBABILITY=0 ENABLE_KEYBOARD_TAB_CYCLE=true ./awake.sh
+```
+
+To keep yourself "present" (reset the idle timer) while it runs, opt into the
+mouse jiggle — requires `cliclick` (`brew install cliclick`):
+
+```bash
+ENABLE_MOUSE_JIGGLE=true ./awake.sh
 ```
 
 ## Tunables
