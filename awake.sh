@@ -30,16 +30,16 @@ set -o pipefail
 # ---------------------------------------------------------------------------
 # Config — tune freely
 # ---------------------------------------------------------------------------
-MIN_SLEEP=30                  # min seconds between actions
-MAX_SLEEP=60                  # max seconds between actions
-TILE_PROBABILITY=25           # percent chance a tick tiles two apps vs single focus
-MENU_BAR_INSET=25             # px reserved at top of screen when tiling
-ENABLE_TAB_SWITCH=true        # switch tabs for dictionary-scriptable apps (Safari)
-ENABLE_KEYBOARD_TAB_CYCLE=false  # opt-in: synthetic app-hotkey tab cycling (Ghostty/Code/DBeaver)
-ENABLE_MOUSE_JIGGLE=false     # opt-in: imperceptible cursor nudge each tick to reset the
+MIN_SLEEP="${MIN_SLEEP:-30}"                  # min seconds between actions
+MAX_SLEEP="${MAX_SLEEP:-60}"                  # max seconds between actions
+TILE_PROBABILITY="${TILE_PROBABILITY:-25}"    # percent chance a tick tiles two apps vs single focus
+MENU_BAR_INSET="${MENU_BAR_INSET:-25}"        # px reserved at top of screen when tiling
+ENABLE_TAB_SWITCH="${ENABLE_TAB_SWITCH:-true}"  # switch tabs for dictionary-scriptable apps (Safari)
+ENABLE_KEYBOARD_TAB_CYCLE="${ENABLE_KEYBOARD_TAB_CYCLE:-false}"  # opt-in: synthetic app-hotkey tab cycling (Ghostty/Code/DBeaver)
+ENABLE_MOUSE_JIGGLE="${ENABLE_MOUSE_JIGGLE:-false}"  # opt-in: imperceptible cursor nudge each tick to reset the
                               # HID idle timer (look "present" to Slack/idle timers).
                               # Synthetic input; requires cliclick (brew install cliclick).
-MOUSE_JIGGLE_PX=1             # pixels to nudge before restoring the cursor
+MOUSE_JIGGLE_PX="${MOUSE_JIGGLE_PX:-1}"        # pixels to nudge before restoring the cursor
 EXCLUDE_APPS=()               # app/process names never selected (empty per requirements)
 LOG_FILE="${AWAKE_LOG_FILE:-}"   # empty => stdout only
 
@@ -165,18 +165,23 @@ EOF
   log "tiled: $a (left) | $b (right)"
 }
 
-# Switch Safari to a random tab via its AppleScript dictionary (real API).
+# Switch Safari to a random window + tab via its AppleScript dictionary (real API).
 safari_random_tab() {
   [ "$ENABLE_TAB_SWITCH" = true ] || return 0
   local out
   out=$(osascript 2>/dev/null <<'EOF'
 tell application "Safari"
   if (count of windows) is 0 then return "no window"
-  set tabCount to count of tabs of front window
+  set winCount to count of windows
+  set winIdx to (random number from 1 to winCount)
+  set targetWindow to window winIdx
+  set tabCount to count of tabs of targetWindow
   if tabCount <= 1 then return "single tab"
   set newIdx to (random number from 1 to tabCount)
-  set current tab of front window to tab newIdx of front window
-  return "switched to tab " & newIdx & " of " & tabCount
+  set current tab of targetWindow to tab newIdx of targetWindow
+  set index of targetWindow to 1
+  activate
+  return "window " & winIdx & " of " & winCount & ", tab " & newIdx & " of " & tabCount
 end tell
 EOF
 )
@@ -299,7 +304,11 @@ _probe_geometry() {
 probe() {
   log "=== awake capability probe ==="
   local running line app isrun wc tabs geo
-  running=$(list_visible_apps)
+  if ! running=$(list_visible_apps); then
+    log "ERROR: could not list visible apps via System Events."
+    log "Grant Accessibility permission to the terminal app running this script, then retry."
+    return 1
+  fi
   printf '%-22s %-9s %-9s %-8s %-9s\n' "APP" "RUNNING" "WINDOWS" "TABS" "GEOMETRY"
   printf '%-22s %-9s %-9s %-8s %-9s\n' "---" "-------" "-------" "----" "--------"
   for app in "Safari" "Ghostty" "Code" "Visual Studio Code" "DBeaver" "dbeaver"; do

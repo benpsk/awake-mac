@@ -50,6 +50,19 @@ before and after a jiggle — a pass means idle dropped to ~0.
 Run `--probe` first (with Safari, Ghostty, DBeaver, VS Code open) to confirm what
 your machine exposes, then paste the table into [`CAPABILITIES.md`](./CAPABILITIES.md).
 
+For a quick interactive test with faster actions:
+
+```bash
+MIN_SLEEP=3 MAX_SLEEP=6 TILE_PROBABILITY=0 ./awake.sh
+```
+
+To also cycle Ghostty tabs and VS Code open editors/files, opt into synthetic
+app hotkeys:
+
+```bash
+MIN_SLEEP=3 MAX_SLEEP=6 TILE_PROBABILITY=0 ENABLE_KEYBOARD_TAB_CYCLE=true ./awake.sh
+```
+
 ## Tunables
 
 Edit the **Config block** at the top of `awake.sh`:
@@ -65,6 +78,9 @@ Edit the **Config block** at the top of `awake.sh`:
 | `MOUSE_JIGGLE_PX` | `1` | Pixels to nudge before restoring the cursor to its exact original spot. |
 | `EXCLUDE_APPS` | `()` | App/process names to never select |
 | `AWAKE_LOG_FILE` (env) | unset | Also append timestamped logs to this file |
+
+All scalar tunables can be overridden from the environment for one run, as shown
+above.
 
 ## What it can and can't reach
 
