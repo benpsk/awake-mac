@@ -33,6 +33,19 @@ chmod +x awake.sh
 Run `--probe` first (with Safari, Ghostty, DBeaver, VS Code open) to confirm what
 your machine exposes, then paste the table into [`CAPABILITIES.md`](./CAPABILITIES.md).
 
+For a quick interactive test with faster actions:
+
+```bash
+MIN_SLEEP=3 MAX_SLEEP=6 TILE_PROBABILITY=0 ./awake.sh
+```
+
+To also cycle Ghostty tabs and VS Code open editors/files, opt into synthetic
+app hotkeys:
+
+```bash
+MIN_SLEEP=3 MAX_SLEEP=6 TILE_PROBABILITY=0 ENABLE_KEYBOARD_TAB_CYCLE=true ./awake.sh
+```
+
 ## Tunables
 
 Edit the **Config block** at the top of `awake.sh`:
@@ -46,6 +59,9 @@ Edit the **Config block** at the top of `awake.sh`:
 | `ENABLE_KEYBOARD_TAB_CYCLE` | `false` | **Opt-in.** Synthetic app-hotkey tab cycling for apps with no dictionary (Ghostty/VS Code/DBeaver). Keymaps are best-guesses — adjust to your bindings. |
 | `EXCLUDE_APPS` | `()` | App/process names to never select |
 | `AWAKE_LOG_FILE` (env) | unset | Also append timestamped logs to this file |
+
+All scalar tunables can be overridden from the environment for one run, as shown
+above.
 
 ## What it can and can't reach
 
