@@ -304,24 +304,19 @@ _do_jiggle() {
   return 0
 }
 
-# Main-display pixel bounds as "W H". Finder reports desktop bounds as
-# "0, 0, W, H"; we keep the last two fields. Empty on failure.
-screen_size() {
-  osascript -e 'tell application "Finder" to get bounds of window of desktop' 2>/dev/null \
-    | awk -F', ' '{print $3, $4}'
-}
-
 # Move the cursor to a random on-screen point. Like the jiggle, cliclick's `m:`
 # posts a REAL CGEvent, so this also resets the HID idle timer — it's just
-# visible movement instead of an imperceptible nudge. Falls back to _do_jiggle
-# if the screen bounds can't be read, so idle reset still happens.
-# RANDOM caps at 32767, fine for normal/4K widths; an ultra-wide combined
-# desktop wider than that would clamp. No flag check here (wrapper gates it).
+# visible movement instead of an imperceptible nudge. Reuses screen_size()
+# (x0 y0 W H); falls back to _do_jiggle if the bounds can't be read, so idle
+# reset still happens. RANDOM caps at 32767, fine for normal/4K widths.
+# No flag check here (wrapper gates it).
 _do_random_move() {
   _have_cliclick || { log "  mouse-move skipped (cliclick not installed: brew install cliclick)"; return 1; }
-  local size w h x y
+  local size x0 y0 w h x y
   size=$(screen_size)
-  w=${size% *}; h=${size#* }
+  read -r x0 y0 w h <<EOF
+$size
+EOF
   case "$w" in ''|*[!0-9]*) log "  mouse-move: could not read screen size ('$size'); jiggling instead"; _do_jiggle; return $? ;; esac
   case "$h" in ''|*[!0-9]*) log "  mouse-move: could not read screen size ('$size'); jiggling instead"; _do_jiggle; return $? ;; esac
   x=$(( RANDOM % w ))
