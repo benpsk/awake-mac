@@ -41,8 +41,8 @@ Two different problems, two different tools:
   no Accessibility needed): `caffeinate -dimsu ./awake.sh`.
 - **Look *active/present*** to apps (Slack green dot, corporate idle timers) →
   those watch the **HID idle timer**, which `caffeinate` does *not* reset. Only
-  a real input event does. `ENABLE_MOUSE_JIGGLE` (below) nudges the cursor 1px
-  and restores it each tick, which posts a real event and resets the timer.
+  a real input event does. `ENABLE_MOUSE_JIGGLE` (below) moves the cursor to a
+  random on-screen point each tick, which posts a real event and resets the timer.
   This is synthetic input, so it is **off by default and labeled in the logs**,
   like `ENABLE_KEYBOARD_TAB_CYCLE`. Requires `cliclick` (`brew install cliclick`).
 
@@ -58,15 +58,20 @@ For a quick interactive test with faster actions:
 MIN_SLEEP=3 MAX_SLEEP=6 TILE_PROBABILITY=0 ./awake.sh
 ```
 
-To also cycle Ghostty tabs and VS Code open editors/files, opt into synthetic
-app hotkeys:
+To add synthetic-keystroke actions — Ghostty/VS Code tab cycling, Safari + VS Code
+scrolling, and the occasional VS Code `Cmd+P` random-file open — opt in:
 
 ```bash
 MIN_SLEEP=3 MAX_SLEEP=6 TILE_PROBABILITY=0 ENABLE_KEYBOARD_TAB_CYCLE=true ./awake.sh
 ```
 
-To keep yourself "present" (reset the idle timer) while it runs, opt into the
-mouse jiggle — requires `cliclick` (`brew install cliclick`):
+> These are synthetic keystrokes sent to whatever app is frontmost. Scrolling and
+> tab cycling are read-only; the VS Code `Cmd+P` open only navigates (worst case a
+> stray `Enter` adds one newline, undoable with `Cmd+Z`). Ghostty is deliberately
+> limited to **tab cycling only** — no keystrokes are sent into terminal content.
+
+To keep yourself "present" (reset the idle timer) while it runs, opt into
+moving the cursor — requires `cliclick` (`brew install cliclick`):
 
 ```bash
 ENABLE_MOUSE_JIGGLE=true ./awake.sh
@@ -82,9 +87,11 @@ Edit the **Config block** at the top of `awake.sh`:
 | `TILE_PROBABILITY` | `25` | % of ticks that tile two apps instead of single-focus |
 | `MENU_BAR_INSET` | `25` | Pixels reserved at the top of the screen when tiling |
 | `ENABLE_TAB_SWITCH` | `true` | Switch Safari tabs via its AppleScript dictionary |
-| `ENABLE_KEYBOARD_TAB_CYCLE` | `false` | **Opt-in.** Synthetic app-hotkey tab cycling for apps with no dictionary (Ghostty/VS Code/DBeaver). Keymaps are best-guesses — adjust to your bindings. |
-| `ENABLE_MOUSE_JIGGLE` | `false` | **Opt-in.** Imperceptible 1px cursor nudge each tick that resets the HID idle timer (look "present"). Synthetic input; needs `cliclick`. |
-| `MOUSE_JIGGLE_PX` | `1` | Pixels to nudge before restoring the cursor to its exact original spot. |
+| `ENABLE_KEYBOARD_TAB_CYCLE` | `false` | **Opt-in.** All synthetic keystrokes: tab cycling for apps with no dictionary (Ghostty/VS Code/DBeaver), Safari + VS Code scrolling, and VS Code `Cmd+P` random-file open. Keymaps are best-guesses — adjust to your bindings. |
+| `VSCODE_OPEN_FILE_PROBABILITY` | `30` | % of VS Code focuses that open a random recent file via `Cmd+P`. |
+| `VSCODE_OPEN_FILE_MAX_STEPS` | `8` | Max down-arrows into the `Cmd+P` recent list before `Enter`. |
+| `ENABLE_MOUSE_JIGGLE` | `false` | **Opt-in.** Moves the cursor to a random on-screen point each tick, resetting the HID idle timer (look "present"). Synthetic input; needs `cliclick`. Falls back to a 1px nudge if screen bounds can't be read. |
+| `MOUSE_JIGGLE_PX` | `1` | Nudge size (px) for the jiggle fallback and `--jiggle-test`. |
 | `EXCLUDE_APPS` | `()` | App/process names to never select |
 | `AWAKE_LOG_FILE` (env) | unset | Also append timestamped logs to this file |
 

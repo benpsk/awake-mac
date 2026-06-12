@@ -26,6 +26,12 @@ Legend: ✅ works via a real API · ⚠️ works sometimes / app-dependent · �
 path · *hotkey only* = reachable only by sending the app's own keyboard shortcut
 (synthetic input, gated behind `ENABLE_KEYBOARD_TAB_CYCLE`).
 
+Beyond tabs, the same synthetic-keystroke surface (also gated behind
+`ENABLE_KEYBOARD_TAB_CYCLE`) drives **scrolling** in Safari and VS Code via Page
+Up/Down, and an occasional VS Code **`Cmd+P` random-file open**. Ghostty is held
+to tab cycling only — no keystrokes are sent into terminal content, since the
+script can't tell vim from a shell in the focused tab.
+
 ## Observed on this machine
 
 Paste `./awake.sh --probe` output here:
