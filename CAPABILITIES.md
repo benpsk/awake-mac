@@ -24,13 +24,13 @@ your Mac (with the apps open) and watching the rotation logs.
 
 Legend: ✅ works via a real API · ⚠️ works sometimes / app-dependent · ❌ no clean
 path · *hotkey only* = reachable only by sending the app's own keyboard shortcut
-(synthetic input, gated behind `ENABLE_KEYBOARD_TAB_CYCLE`).
+(synthetic input, gated behind the `ENABLE_ALL` master switch).
 
-Beyond tabs, the same synthetic-keystroke surface (also gated behind
-`ENABLE_KEYBOARD_TAB_CYCLE`) drives **scrolling** in Safari and VS Code via Page
-Up/Down, and an occasional VS Code **`Cmd+P` random-file open**. Ghostty is held
-to tab cycling only — no keystrokes are sent into terminal content, since the
-script can't tell vim from a shell in the focused tab.
+Beyond tabs, the same synthetic-keystroke surface (also under `ENABLE_ALL`) drives
+**scrolling** in Safari and VS Code via Page Up/Down, and an occasional VS Code
+**`Cmd+P` random-file open**. Ghostty is held to tab cycling only — no keystrokes
+are sent into terminal content, since the script can't tell vim from a shell in
+the focused tab.
 
 ## Observed on this machine
 
@@ -56,7 +56,7 @@ has no native "move mouse". A real move needs `cliclick` (or `CGEventPost`). Not
 the trap: `CGWarpMouseCursorPosition` *teleports* the cursor but does **not**
 reset the HID idle timer, so apps still consider you away. `cliclick m:` posts a
 real `CGEvent`, which **does** reset it. So "look present" is reachable, but only
-via genuine posted input — gated behind `ENABLE_MOUSE_JIGGLE` and provable with
+via genuine posted input — gated behind `ENABLE_ALL` and provable with
 `./awake.sh --jiggle-test` (idle before vs after).
 
 ## Takeaway

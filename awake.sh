@@ -34,14 +34,13 @@ MIN_SLEEP="${MIN_SLEEP:-30}"                  # min seconds between actions
 MAX_SLEEP="${MAX_SLEEP:-60}"                  # max seconds between actions
 TILE_PROBABILITY="${TILE_PROBABILITY:-25}"    # percent chance a tick tiles two apps vs single focus
 MENU_BAR_INSET="${MENU_BAR_INSET:-25}"        # px reserved at top of screen when tiling
-ENABLE_TAB_SWITCH="${ENABLE_TAB_SWITCH:-true}"  # switch tabs for dictionary-scriptable apps (Safari)
-ENABLE_KEYBOARD_TAB_CYCLE="${ENABLE_KEYBOARD_TAB_CYCLE:-false}"  # opt-in: ALL synthetic keystrokes — tab cycling
-                              # (Ghostty/Code/DBeaver), Safari + VS Code scrolling, and VS Code Cmd+P file open.
+# Single master switch. true = the full active mode: Safari tab switching,
+# synthetic keystrokes (Safari/VS Code scroll, Ghostty/VS Code/DBeaver tab cycle,
+# VS Code Cmd+P file open), and random cursor movement. false = focus/tile/window
+# rotation only. Cursor movement needs cliclick (brew install cliclick).
+ENABLE_ALL="${ENABLE_ALL:-false}"
 VSCODE_OPEN_FILE_PROBABILITY="${VSCODE_OPEN_FILE_PROBABILITY:-30}"  # % of VS Code focuses that open a random recent file via Cmd+P
 VSCODE_OPEN_FILE_MAX_STEPS="${VSCODE_OPEN_FILE_MAX_STEPS:-8}"       # max down-arrows into the Cmd+P recent list before Enter
-ENABLE_MOUSE_JIGGLE="${ENABLE_MOUSE_JIGGLE:-false}"  # opt-in: move the cursor to a random on-screen point each
-                              # tick to reset the HID idle timer (look "present" to Slack/idle timers).
-                              # Synthetic input; requires cliclick (brew install cliclick).
 MOUSE_JIGGLE_PX="${MOUSE_JIGGLE_PX:-1}"        # pixels to nudge before restoring the cursor (jiggle fallback / --jiggle-test)
 EXCLUDE_APPS=()               # app/process names never selected (empty per requirements)
 LOG_FILE="${AWAKE_LOG_FILE:-}"   # empty => stdout only
@@ -170,7 +169,7 @@ EOF
 
 # Switch Safari to a random window + tab via its AppleScript dictionary (real API).
 safari_random_tab() {
-  [ "$ENABLE_TAB_SWITCH" = true ] || return 0
+  [ "$ENABLE_ALL" = true ] || return 0
   local out
   out=$(osascript 2>/dev/null <<'EOF'
 tell application "Safari"
@@ -197,8 +196,8 @@ EOF
 # and is therefore opt-in. Keymaps are best-guesses — adjust to your bindings.
 keyboard_cycle_tab() {
   local app="$1"
-  if [ "$ENABLE_KEYBOARD_TAB_CYCLE" != true ]; then
-    log "  $app: tab switch skipped (no scripting dictionary; ENABLE_KEYBOARD_TAB_CYCLE=false)"
+  if [ "$ENABLE_ALL" != true ]; then
+    log "  $app: tab switch skipped (no scripting dictionary; ENABLE_ALL=false)"
     return 0
   fi
   local script=""
@@ -223,12 +222,11 @@ EOF
 
 # Scroll the focused app up or down via a synthetic Page Up/Down key code.
 # Page keys are universally safe — they never modify content, only the viewport.
-# Synthetic input, so gated by ENABLE_KEYBOARD_TAB_CYCLE like the other
-# keystroke actions. Used for Safari and VS Code (NOT Ghostty, to avoid acting
-# on terminal content).
+# Synthetic input, so gated by ENABLE_ALL like the other keystroke actions.
+# Used for Safari and VS Code (NOT Ghostty, to avoid acting on terminal content).
 synthetic_scroll() {
   local app="$1" code label
-  [ "$ENABLE_KEYBOARD_TAB_CYCLE" = true ] || return 0
+  [ "$ENABLE_ALL" = true ] || return 0
   if [ $(( RANDOM % 2 )) -eq 0 ]; then code=121; label="PageDown"; else code=116; label="PageUp"; fi
   if osascript >/dev/null 2>&1 <<EOF
 tell application "System Events"
@@ -247,10 +245,10 @@ EOF
 # Cmd+P only navigates the quick-open palette; it never edits content. The only
 # misfire (palette didn't open) is the arrows moving the cursor (harmless) and a
 # single stray newline from Enter — undoable with Cmd+Z. Synthetic input, gated
-# by ENABLE_KEYBOARD_TAB_CYCLE. Esc first to dismiss any stray palette/modal.
+# by ENABLE_ALL. Esc first to dismiss any stray palette/modal.
 vscode_open_random_file() {
   local app="$1" steps
-  [ "$ENABLE_KEYBOARD_TAB_CYCLE" = true ] || return 0
+  [ "$ENABLE_ALL" = true ] || return 0
   steps=$(( RANDOM % VSCODE_OPEN_FILE_MAX_STEPS + 1 ))   # 1..MAX down-arrows
   if osascript >/dev/null 2>&1 <<EOF
 tell application "System Events"
@@ -278,7 +276,7 @@ EOF
 # This is the one capability osascript cannot reach: there is no native
 # "move cursor" in AppleScript, and CGWarpMouseCursorPosition does NOT reset
 # the idle timer. cliclick's `m:` posts a REAL CGEvent, which does. So this is
-# synthetic input — opt-in (ENABLE_MOUSE_JIGGLE) and labeled, like the keyboard
+# synthetic input — opt-in (ENABLE_ALL) and labeled, like the keyboard
 # tab cycle above. The rotation loop uses _do_random_move (visible wander); the
 # 1px nudge-and-restore _do_jiggle remains as a fallback and for --jiggle-test.
 # ---------------------------------------------------------------------------
@@ -336,7 +334,7 @@ _do_random_move() {
 # Opt-in wrapper called from the rotation loop. Moves the cursor to a random
 # on-screen point each tick (synthetic input; also resets the HID idle timer).
 mouse_jiggle() {
-  [ "$ENABLE_MOUSE_JIGGLE" = true ] || return 0
+  [ "$ENABLE_ALL" = true ] || return 0
   _do_random_move
 }
 
@@ -457,7 +455,7 @@ cleanup() { echo; log "awake stopped."; exit 0; }
 run_loop() {
   trap cleanup INT TERM
   log "awake started (pid $$). Ctrl+C to stop."
-  log "sleep ${MIN_SLEEP}-${MAX_SLEEP}s | tile ${TILE_PROBABILITY}% | tab-switch ${ENABLE_TAB_SWITCH} | kbd-tab-cycle ${ENABLE_KEYBOARD_TAB_CYCLE} | mouse-jiggle ${ENABLE_MOUSE_JIGGLE}"
+  log "sleep ${MIN_SLEEP}-${MAX_SLEEP}s | tile ${TILE_PROBABILITY}% | active-mode (ENABLE_ALL) ${ENABLE_ALL}"
 
   while true; do
     local apps=() line n roll a b app
@@ -507,15 +505,13 @@ USAGE:
 TUNABLES (edit the Config block at the top of the script):
   MIN_SLEEP / MAX_SLEEP        random wait per action (default 30-60s)
   TILE_PROBABILITY             % of ticks that tile two apps (default 25)
-  ENABLE_TAB_SWITCH            switch Safari tabs via its dictionary (default true)
-  ENABLE_KEYBOARD_TAB_CYCLE    opt-in: ALL synthetic keystrokes (default false) —
-                               tab cycling (Ghostty/VS Code/DBeaver), Safari + VS Code
-                               scrolling, and VS Code Cmd+P random file open
+  ENABLE_ALL                   single master switch (default false). true = full
+                               active mode: Safari tab switching, synthetic keystrokes
+                               (Safari/VS Code scroll, Ghostty/VS Code/DBeaver tab
+                               cycle, VS Code Cmd+P file open), and random cursor
+                               movement (needs cliclick: brew install cliclick)
   VSCODE_OPEN_FILE_PROBABILITY % of VS Code focuses that open a random file (default 30)
   VSCODE_OPEN_FILE_MAX_STEPS   max down-arrows into the Cmd+P recent list (default 8)
-  ENABLE_MOUSE_JIGGLE          opt-in: move the cursor to a random on-screen point
-                               each tick to reset the HID idle timer / look "present"
-                               (default false; needs cliclick: brew install cliclick)
   MOUSE_JIGGLE_PX              nudge size for the jiggle fallback / --jiggle-test (default 1)
   EXCLUDE_APPS                 app names to never select
   AWAKE_LOG_FILE (env)         also append logs to this file
