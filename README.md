@@ -4,7 +4,8 @@ How far can a plain **bash + AppleScript (`osascript`)** script drive the apps
 already open on a Mac, using only *legitimate* automation surfaces?
 
 `awake.sh` randomly rotates focus across your visible apps every 30–60 seconds,
-raises specific windows, switches native tabs where the app exposes a scripting
+excluding Terminal by default so the shell running the script is not selected.
+It raises specific windows, switches native tabs where the app exposes a scripting
 dictionary, and occasionally tiles two apps side-by-side. A `--probe` mode prints
 a live capability map so you can see exactly what each app on *your* machine allows.
 
@@ -89,7 +90,8 @@ Edit the **Config block** at the top of `awake.sh`:
 | `VSCODE_OPEN_FILE_PROBABILITY` | `30` | % of VS Code focuses that open a random recent file via `Cmd+P`. |
 | `VSCODE_OPEN_FILE_MAX_STEPS` | `8` | Max down-arrows into the `Cmd+P` recent list before `Enter`. |
 | `MOUSE_JIGGLE_PX` | `1` | Nudge size (px) for the jiggle fallback and `--jiggle-test`. |
-| `EXCLUDE_APPS` | `()` | App/process names to never select |
+| `EXCLUDE_APPS` | `("Terminal")` | App/process names to never select. This keeps macOS Terminal from being focused while it runs the script. |
+| `AWAKE_EXCLUDE_APPS` (env) | unset | Comma-separated extra app/process names to never select, for example `AWAKE_EXCLUDE_APPS="Finder,Music" ./awake.sh`. |
 | `AWAKE_LOG_FILE` (env) | unset | Also append timestamped logs to this file |
 
 All scalar tunables can be overridden from the environment for one run, as shown

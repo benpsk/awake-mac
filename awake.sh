@@ -42,7 +42,8 @@ ENABLE_ALL="${ENABLE_ALL:-false}"
 VSCODE_OPEN_FILE_PROBABILITY="${VSCODE_OPEN_FILE_PROBABILITY:-30}"  # % of VS Code focuses that open a random recent file via Cmd+P
 VSCODE_OPEN_FILE_MAX_STEPS="${VSCODE_OPEN_FILE_MAX_STEPS:-8}"       # max down-arrows into the Cmd+P recent list before Enter
 MOUSE_JIGGLE_PX="${MOUSE_JIGGLE_PX:-1}"        # pixels to nudge before restoring the cursor (jiggle fallback / --jiggle-test)
-EXCLUDE_APPS=()               # app/process names never selected (empty per requirements)
+EXCLUDE_APPS=("Terminal")     # app/process names never selected
+AWAKE_EXCLUDE_APPS="${AWAKE_EXCLUDE_APPS:-}"   # comma-separated extra app/process names to never select
 LOG_FILE="${AWAKE_LOG_FILE:-}"   # empty => stdout only
 
 # ---------------------------------------------------------------------------
@@ -80,6 +81,34 @@ _filter_excluded() {
     done
     [ "$skip" -eq 0 ] && printf '%s\n' "$line"
   done
+}
+
+load_env_excludes() {
+  local old_ifs item trimmed
+  [ -z "$AWAKE_EXCLUDE_APPS" ] && return 0
+
+  old_ifs=$IFS
+  IFS=','
+  for item in $AWAKE_EXCLUDE_APPS; do
+    IFS=$old_ifs
+    trimmed=$(printf '%s' "$item" | sed 's/^ *//;s/ *$//')
+    [ -n "$trimmed" ] && EXCLUDE_APPS+=("$trimmed")
+    IFS=','
+  done
+  IFS=$old_ifs
+}
+
+joined_exclude_apps() {
+  local out="" e
+  for e in "${EXCLUDE_APPS[@]}"; do
+    [ -z "$e" ] && continue
+    if [ -z "$out" ]; then
+      out="$e"
+    else
+      out="$out, $e"
+    fi
+  done
+  printf '%s' "$out"
 }
 
 # Bring an app to the foreground. Prefer System Events (keyed on the process
@@ -451,6 +480,7 @@ run_loop() {
   trap cleanup INT TERM
   log "awake started (pid $$). Ctrl+C to stop."
   log "sleep ${MIN_SLEEP}-${MAX_SLEEP}s | tile ${TILE_PROBABILITY}% | active-mode (ENABLE_ALL) ${ENABLE_ALL}"
+  log "excluding apps: $(joined_exclude_apps)"
 
   while true; do
     local apps=() line n roll a b app
@@ -508,7 +538,8 @@ TUNABLES (edit the Config block at the top of the script):
   VSCODE_OPEN_FILE_PROBABILITY % of VS Code focuses that open a random file (default 30)
   VSCODE_OPEN_FILE_MAX_STEPS   max down-arrows into the Cmd+P recent list (default 8)
   MOUSE_JIGGLE_PX              nudge size for the jiggle fallback / --jiggle-test (default 1)
-  EXCLUDE_APPS                 app names to never select
+  EXCLUDE_APPS                 app names to never select (default: Terminal)
+  AWAKE_EXCLUDE_APPS           comma-separated extra app names to never select
   AWAKE_LOG_FILE (env)         also append logs to this file
 
 REQUIREMENT:
@@ -521,6 +552,8 @@ USAGE
 }
 
 main() {
+  load_env_excludes
+
   case "${1:-}" in
     --probe) probe ;;
     --jiggle-test) jiggle_test ;;
