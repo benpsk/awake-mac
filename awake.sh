@@ -32,7 +32,7 @@ set -o pipefail
 # ---------------------------------------------------------------------------
 MIN_SLEEP="${MIN_SLEEP:-30}"                  # min seconds between actions
 MAX_SLEEP="${MAX_SLEEP:-60}"                  # max seconds between actions
-TILE_PROBABILITY="${TILE_PROBABILITY:-25}"    # percent chance a tick tiles two apps vs single focus
+TILE_PROBABILITY="${TILE_PROBABILITY:-25}"    # percent chance a tick tiles two apps side-by-side; otherwise full-window a single app
 MENU_BAR_INSET="${MENU_BAR_INSET:-25}"        # px reserved at top of screen when tiling
 # Single master switch. true = the full active mode: Safari tab switching,
 # synthetic keystrokes (Safari/VS Code scroll, Ghostty/VS Code/DBeaver tab cycle,
@@ -178,6 +178,20 @@ EOF
   else
     log "  $app: geometry set failed (app ignores AX position/size)"
   fi
+}
+
+# Maximize a single app to fill the main display (below the menu bar).
+maximize_app() {
+  local app="$1" dims x0 y0 W H top usableH
+  dims=$(screen_size) || { log "maximize: cannot read screen size"; return 1; }
+  read -r x0 y0 W H <<EOF
+$dims
+EOF
+  top=$MENU_BAR_INSET
+  usableH=$(( H - top ))
+  set_window_geometry "$app" 0 "$top" "$W" "$usableH"
+  activate_app "$app"
+  log "maximized: $app (full screen)"
 }
 
 # Tile two apps left-half | right-half on the main display.
@@ -504,8 +518,8 @@ run_loop() {
       tile_two "$a" "$b"
     else
       app=${apps[RANDOM % n]}
-      log "action: focus -> $app ($n apps available)"
-      activate_app "$app"
+      log "action: full window -> $app ($n apps available)"
+      maximize_app "$app"
       dispatch_deep "$app"
     fi
 
@@ -529,7 +543,7 @@ USAGE:
 
 TUNABLES (edit the Config block at the top of the script):
   MIN_SLEEP / MAX_SLEEP        random wait per action (default 30-60s)
-  TILE_PROBABILITY             % of ticks that tile two apps (default 25)
+  TILE_PROBABILITY             % of ticks that tile two apps side-by-side; the rest full-window a single app (default 25)
   ENABLE_ALL                   single master switch (default false). true = full
                                active mode: Safari tab switching, synthetic keystrokes
                                (Safari/VS Code scroll, Ghostty/VS Code/DBeaver tab
