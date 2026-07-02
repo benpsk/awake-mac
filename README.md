@@ -1,19 +1,25 @@
-# awake — macOS app-control experiment
+# awake — app-control experiment for macOS and Windows
 
-How far can a plain **bash + AppleScript (`osascript`)** script drive the apps
-already open on a Mac, using only *legitimate* automation surfaces?
+How far can plain platform scripts drive the apps already open on a machine,
+using each OS's normal automation/input surfaces?
 
-`awake.sh` randomly rotates focus across your visible apps every 30–60 seconds,
+`awake.sh` randomly rotates focus across your visible macOS apps every 30–60 seconds,
 excluding Terminal by default so the shell running the script is not selected.
 It raises specific windows, switches native tabs where the app exposes a scripting
 dictionary, and occasionally tiles two apps side-by-side. A `--probe` mode prints
 a live capability map so you can see exactly what each app on *your* machine allows.
+
+`awake.ps1` is the Windows 10+ sibling: it rotates focus across visible windows,
+prevents normal system/display sleep while running, and in `ENABLE_ALL=true` mode
+moves the cursor with Win32 `SendInput` so the Windows idle timer sees input.
 
 > This is a capability demo. It does **not** fake user input to deceive anyone.
 > The only spot a synthetic keystroke can occur (cycling tabs in apps that have
 > no scripting dictionary) is **off by default** and clearly labeled in the logs.
 
 ## Requirements
+
+### macOS
 
 - macOS (works with the stock `/bin/bash` 3.2; no extra installs)
 - **Accessibility permission** for the terminal app you run it from:
@@ -23,7 +29,16 @@ a live capability map so you can see exactly what each app on *your* machine all
 - **`cliclick`** — only for the cursor movement in active mode (`ENABLE_ALL=true`):
   `brew install cliclick`. Not needed for focus/window/tile rotation.
 
+### Windows
+
+- Windows 10 or newer.
+- Built-in Windows PowerShell is enough; no extra install is required.
+- `awake.ps1` uses Win32 APIs directly: `SetThreadExecutionState`,
+  `SetForegroundWindow`, and `SendInput`.
+
 ## Usage
+
+### macOS
 
 ```bash
 chmod +x awake.sh
@@ -34,24 +49,40 @@ chmod +x awake.sh
 ./awake.sh --help       # show help
 ```
 
+### Windows
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\awake.ps1
+powershell -ExecutionPolicy Bypass -File .\awake.ps1 --probe
+powershell -ExecutionPolicy Bypass -File .\awake.ps1 --jiggle-test
+powershell -ExecutionPolicy Bypass -File .\awake.ps1 --help
+```
+
 ## Staying awake: sleep vs presence
 
 Two different problems, two different tools:
 
-- **Stop the Mac sleeping** → use the built-in `caffeinate` (no input faked,
+- **Stop macOS sleeping** → use the built-in `caffeinate` (no input faked,
   no Accessibility needed): `caffeinate -dimsu ./awake.sh`.
-- **Look *active/present*** to apps (Slack green dot, corporate idle timers) →
+- **Stop Windows sleeping** → `awake.ps1` calls `SetThreadExecutionState`
+  while it is running.
+- **Look *active/present*** to apps (Slack green dot, idle timers) →
   those watch the **HID idle timer**, which `caffeinate` does *not* reset. Only
-  a real input event does. Active mode (`ENABLE_ALL=true`, below) moves the cursor
-  to a random on-screen point each tick, which posts a real event and resets the
-  timer. This is synthetic input, so it is **off by default and labeled in the
-  logs**. Requires `cliclick` (`brew install cliclick`).
+  a real input event does. Active mode (`ENABLE_ALL=true`, below) moves the
+  cursor to a random on-screen point each tick, which posts an input event and
+  resets the timer. This is synthetic input, so it is **off by default and
+  labeled in the logs**. macOS requires `cliclick` (`brew install cliclick`);
+  Windows uses built-in `SendInput`.
 
 Run `./awake.sh --jiggle-test` to confirm it works: it prints the idle time
 before and after a jiggle — a pass means idle dropped to ~0.
 
-Run `--probe` first (with Safari, Ghostty, DBeaver, VS Code open) to confirm what
-your machine exposes, then paste the table into [`CAPABILITIES.md`](./CAPABILITIES.md).
+On Windows, run `powershell -ExecutionPolicy Bypass -File .\awake.ps1 --jiggle-test`
+to confirm `SendInput` can move the cursor out and back.
+
+On macOS, run `--probe` first (with Safari, Ghostty, DBeaver, VS Code open) to
+confirm what your machine exposes, then paste the table into
+[`CAPABILITIES.md`](./CAPABILITIES.md).
 
 For a quick interactive test with faster actions:
 
@@ -59,17 +90,25 @@ For a quick interactive test with faster actions:
 MIN_SLEEP=3 MAX_SLEEP=6 TILE_PROBABILITY=0 ./awake.sh
 ```
 
-For the **full active mode** — Safari tab switching, synthetic-keystroke actions
-(Ghostty/VS Code tab cycling, Safari + VS Code scrolling, the occasional VS Code
-`Cmd+P` random-file open), and random cursor movement — flip the single master
-switch `ENABLE_ALL`:
+For the macOS **full active mode** — Safari tab switching, synthetic-keystroke
+actions (Ghostty/VS Code tab cycling, Safari + VS Code scrolling, the occasional
+VS Code `Cmd+P` random-file open), and random cursor movement — flip the single
+master switch `ENABLE_ALL`:
 
 ```bash
 ENABLE_ALL=true ./awake.sh
 ```
 
+Windows:
+
+```powershell
+$env:ENABLE_ALL="true"
+powershell -ExecutionPolicy Bypass -File .\awake.ps1
+```
+
 Cursor movement needs `cliclick` (`brew install cliclick`); without it that one
-action logs a skip and everything else still runs.
+macOS action logs a skip and everything else still runs. Windows has no external
+cursor-movement dependency.
 
 > In active mode, synthetic keystrokes are sent to whatever app is frontmost.
 > Scrolling and tab cycling are read-only; the VS Code `Cmd+P` open only navigates
@@ -79,19 +118,20 @@ action logs a skip and everything else still runs.
 
 ## Tunables
 
-Edit the **Config block** at the top of `awake.sh`:
+Edit the **Config block** at the top of `awake.sh`, or set environment variables
+for either script:
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `MIN_SLEEP` / `MAX_SLEEP` | `30` / `60` | Random wait (seconds) between actions |
-| `TILE_PROBABILITY` | `25` | % of ticks that tile two apps instead of single-focus |
-| `MENU_BAR_INSET` | `25` | Pixels reserved at the top of the screen when tiling |
-| `ENABLE_ALL` | `false` | **Single master switch.** `true` = full active mode: Safari tab switching, synthetic keystrokes (Safari/VS Code scroll, Ghostty/VS Code/DBeaver tab cycle, VS Code `Cmd+P` file open), and random cursor movement. `false` = focus/tile/window rotation only. Cursor movement needs `cliclick`. |
-| `VSCODE_OPEN_FILE_PROBABILITY` | `30` | % of VS Code focuses that open a random recent file via `Cmd+P`. |
-| `VSCODE_OPEN_FILE_MAX_STEPS` | `8` | Max down-arrows into the `Cmd+P` recent list before `Enter`. |
+| `TILE_PROBABILITY` | `25` | macOS only: % of ticks that tile two apps instead of single-focus |
+| `MENU_BAR_INSET` | `25` | macOS only: pixels reserved at the top of the screen when tiling |
+| `ENABLE_ALL` | `false` | **Single master switch.** macOS: Safari tab switching, synthetic keystrokes, VS Code `Cmd+P`, and random cursor movement. Windows: random cursor movement via `SendInput`. |
+| `VSCODE_OPEN_FILE_PROBABILITY` | `30` | macOS only: % of VS Code focuses that open a random recent file via `Cmd+P`. |
+| `VSCODE_OPEN_FILE_MAX_STEPS` | `8` | macOS only: max down-arrows into the `Cmd+P` recent list before `Enter`. |
 | `MOUSE_JIGGLE_PX` | `1` | Nudge size (px) for the jiggle fallback and `--jiggle-test`. |
-| `EXCLUDE_APPS` | `("Terminal")` | App/process names to never select. This keeps macOS Terminal from being focused while it runs the script. |
-| `AWAKE_EXCLUDE_APPS` (env) | unset | Comma-separated extra app/process names to never select, for example `AWAKE_EXCLUDE_APPS="Finder,Music" ./awake.sh`. |
+| `EXCLUDE_APPS` | platform default | Built-in process/window names to never select. macOS defaults to `Terminal`; Windows defaults to common shell hosts. |
+| `AWAKE_EXCLUDE_APPS` (env) | unset | Comma-separated extra app/process/window names to never select, for example `AWAKE_EXCLUDE_APPS="Finder,Music" ./awake.sh`. |
 | `AWAKE_LOG_FILE` (env) | unset | Also append timestamped logs to this file |
 
 All scalar tunables can be overridden from the environment for one run, as shown
