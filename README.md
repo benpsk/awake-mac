@@ -10,12 +10,14 @@ dictionary, and occasionally tiles two apps side-by-side. A `--probe` mode print
 a live capability map so you can see exactly what each app on *your* machine allows.
 
 `awake.ps1` is the Windows 10+ sibling: it rotates focus across visible windows,
-prevents normal system/display sleep while running, and in `ENABLE_ALL=true` mode
-moves the cursor with Win32 `SendInput` so the Windows idle timer sees input.
+maximizes or tiles them, and prevents normal system/display sleep while running.
+In `ENABLE_ALL=true` mode it adds Chrome/Postman tab switching and scrolling,
+VS Code editor/scroll/unique workspace-file actions, and cursor movement via Win32 `SendInput`.
+CMD, PowerShell, and Windows Terminal remain focus-only.
 
 > This is a capability demo. It does **not** fake user input to deceive anyone.
-> The only spot a synthetic keystroke can occur (cycling tabs in apps that have
-> no scripting dictionary) is **off by default** and clearly labeled in the logs.
+> Synthetic keystrokes and cursor movement are **off by default** and clearly
+> labeled in the logs.
 
 ## Requirements
 
@@ -92,7 +94,7 @@ MIN_SLEEP=3 MAX_SLEEP=6 TILE_PROBABILITY=0 ./awake.sh
 
 For the macOS **full active mode** — Safari tab switching, synthetic-keystroke
 actions (Ghostty/VS Code tab cycling, Safari + VS Code scrolling, the occasional
-VS Code `Cmd+P` random-file open), and random cursor movement — flip the single
+unique VS Code workspace-file open), and random cursor movement — flip the single
 master switch `ENABLE_ALL`:
 
 ```bash
@@ -106,13 +108,26 @@ $env:ENABLE_ALL="true"
 powershell -ExecutionPolicy Bypass -File .\awake.ps1
 ```
 
+Windows active-mode mappings:
+
+| App | Active action |
+|---|---|
+| Chrome | `Ctrl+Tab`, then `Page Up` or `Page Down` |
+| Postman | `Ctrl+Tab`, then `Page Up` or `Page Down` |
+| VS Code | `Ctrl+PageDown`, scrolling, and occasional unique workspace-file opening |
+| CMD / PowerShell / Windows Terminal | Focus only; no synthetic keystrokes |
+
+Before sending a shortcut, the Windows script confirms that the intended window
+is still foreground. It protects the terminal window that launched the script,
+while allowing other terminal windows to participate in rotation.
+
 Cursor movement needs `cliclick` (`brew install cliclick`); without it that one
 macOS action logs a skip and everything else still runs. Windows has no external
 cursor-movement dependency.
 
 > In active mode, synthetic keystrokes are sent to whatever app is frontmost.
-> Scrolling and tab cycling are read-only; the VS Code `Cmd+P` open only navigates
-> (worst case a stray `Enter` adds one newline, undoable with `Cmd+Z`). Ghostty is
+> Scrolling and tab cycling are read-only. VS Code files are opened by absolute
+> path through the platform launcher and are never edited. Ghostty is
 > deliberately limited to **tab cycling only** — no keystrokes are sent into
 > terminal content.
 
@@ -124,13 +139,13 @@ for either script:
 | Variable | Default | Meaning |
 |---|---|---|
 | `MIN_SLEEP` / `MAX_SLEEP` | `30` / `60` | Random wait (seconds) between actions |
-| `TILE_PROBABILITY` | `25` | macOS only: % of ticks that tile two apps instead of single-focus |
+| `TILE_PROBABILITY` | `25` | % of ticks that tile two windows instead of maximizing one |
 | `MENU_BAR_INSET` | `25` | macOS only: pixels reserved at the top of the screen when tiling |
-| `ENABLE_ALL` | `false` | **Single master switch.** macOS: Safari tab switching, synthetic keystrokes, VS Code `Cmd+P`, and random cursor movement. Windows: random cursor movement via `SendInput`. |
-| `VSCODE_OPEN_FILE_PROBABILITY` | `30` | macOS only: % of VS Code focuses that open a random recent file via `Cmd+P`. |
-| `VSCODE_OPEN_FILE_MAX_STEPS` | `8` | macOS only: max down-arrows into the `Cmd+P` recent list before `Enter`. |
+| `ENABLE_ALL` | `false` | **Single master switch.** Enables platform app actions and random cursor movement. |
+| `VSCODE_OPEN_FILE_PROBABILITY` | `30` | % of VS Code focuses that open a unique workspace file. |
+| `VSCODE_RANDOM_FILE_CYCLE_SIZE` | `20` | Unique code/text files opened per workspace before reshuffling. |
 | `MOUSE_JIGGLE_PX` | `1` | Nudge size (px) for the jiggle fallback and `--jiggle-test`. |
-| `EXCLUDE_APPS` | platform default | Built-in process/window names to never select. macOS defaults to `Terminal`; Windows defaults to common shell hosts. |
+| `EXCLUDE_APPS` | platform default | Built-in names to never select. macOS excludes `Terminal`; Windows excludes shell-only surfaces and protects the exact runner window. |
 | `AWAKE_EXCLUDE_APPS` (env) | unset | Comma-separated extra app/process/window names to never select, for example `AWAKE_EXCLUDE_APPS="Finder,Music" ./awake.sh`. |
 | `AWAKE_LOG_FILE` (env) | unset | Also append timestamped logs to this file |
 
@@ -148,6 +163,18 @@ above.
 | Internal panels (file tree, DB navigator, request collections) | Accessibility tree | ❌ Electron/Java-SWT expose little to nothing |
 
 See [`CAPABILITIES.md`](./CAPABILITIES.md) for the detailed findings.
+
+On Windows, window focus/raise/maximize/tiling uses Win32 APIs. Chrome and Postman
+use foreground-verified shortcuts. VS Code also uses its installed CLI to open a
+shuffled set of unique code/text files from the matched local workspace. Each
+workspace has an independent in-memory cycle; after 20 files (or all eligible
+files in a smaller workspace), the set is rebuilt and reshuffled. Restarting
+`awake.ps1` resets this state. Other visible apps participate at the window level.
+
+On macOS, VS Code uses the same per-workspace unique-file cycle. Workspace state
+is held in a script-owned temporary directory because the stock Bash 3.2 lacks
+associative arrays; Ctrl+C and normal shutdown remove it. The built-in `open`
+command opens each selected path, so no VS Code CLI installation is required.
 
 ## Notes & limits
 

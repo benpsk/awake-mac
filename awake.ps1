@@ -2,8 +2,9 @@
 #
 # Windows sibling to awake.sh:
 #   - Randomly rotates focus across visible windows every 30-60s
+#   - Maximizes one window or tiles two windows on the primary work area
 #   - Prevents normal system/display sleep while running
-#   - In ENABLE_ALL=true mode, moves the mouse with SendInput each tick
+#   - In ENABLE_ALL=true mode, drives safe app shortcuts and mouse movement
 #
 # Stop with Ctrl+C.
 
@@ -36,10 +37,13 @@ function Get-EnvBool {
 
 $script:MIN_SLEEP = Get-EnvInt "MIN_SLEEP" 30
 $script:MAX_SLEEP = Get-EnvInt "MAX_SLEEP" 60
+$script:TILE_PROBABILITY = Get-EnvInt "TILE_PROBABILITY" 25
 $script:ENABLE_ALL = Get-EnvBool "ENABLE_ALL" $false
+$script:VSCODE_OPEN_FILE_PROBABILITY = Get-EnvInt "VSCODE_OPEN_FILE_PROBABILITY" 30
+$script:VSCODE_RANDOM_FILE_CYCLE_SIZE = Get-EnvInt "VSCODE_RANDOM_FILE_CYCLE_SIZE" 20
 $script:MOUSE_JIGGLE_PX = Get-EnvInt "MOUSE_JIGGLE_PX" 1
 $script:LOG_FILE = [Environment]::GetEnvironmentVariable("AWAKE_LOG_FILE")
-$script:EXCLUDE_APPS = @("powershell", "pwsh", "cmd", "WindowsTerminal", "conhost")
+$script:EXCLUDE_APPS = @("Program Manager", "Microsoft Text Input Application", "TextInputHost")
 
 $extraExcludes = [Environment]::GetEnvironmentVariable("AWAKE_EXCLUDE_APPS")
 if (-not [string]::IsNullOrWhiteSpace($extraExcludes)) {
@@ -54,6 +58,10 @@ if ($script:MAX_SLEEP -lt $script:MIN_SLEEP) {
     $script:MIN_SLEEP = $script:MAX_SLEEP
     $script:MAX_SLEEP = $tmp
 }
+$script:TILE_PROBABILITY = [Math]::Max(0, [Math]::Min(100, $script:TILE_PROBABILITY))
+$script:VSCODE_OPEN_FILE_PROBABILITY = [Math]::Max(0, [Math]::Min(100, $script:VSCODE_OPEN_FILE_PROBABILITY))
+$script:VSCODE_RANDOM_FILE_CYCLE_SIZE = [Math]::Max(1, $script:VSCODE_RANDOM_FILE_CYCLE_SIZE)
+$script:VSCODE_FILE_CYCLES = @{}
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -101,7 +109,14 @@ public static class AwakeWin32
     public struct INPUT
     {
         public uint type;
-        public MOUSEINPUT mi;
+        public INPUTUNION data;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    public struct INPUTUNION
+    {
+        [FieldOffset(0)] public MOUSEINPUT mi;
+        [FieldOffset(0)] public KEYBDINPUT ki;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -110,6 +125,16 @@ public static class AwakeWin32
         public int dx;
         public int dy;
         public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KEYBDINPUT
+    {
+        public ushort wVk;
+        public ushort wScan;
         public uint dwFlags;
         public uint time;
         public IntPtr dwExtraInfo;
@@ -149,6 +174,15 @@ public static class AwakeWin32
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool MoveWindow(IntPtr hWnd, int x, int y, int width, int height, bool repaint);
+
+    [DllImport("user32.dll")]
+    private static extern bool SystemParametersInfo(uint action, uint param, out RECT rect, uint update);
+
+    [DllImport("user32.dll")]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
     [DllImport("user32.dll")]
@@ -165,6 +199,8 @@ public static class AwakeWin32
     private const uint MOUSEEVENTF_MOVE = 0x0001;
     private const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
     private const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
+    private const uint KEYEVENTF_KEYUP = 0x0002;
+    private const uint SPI_GETWORKAREA = 0x0030;
     private const int SM_XVIRTUALSCREEN = 76;
     private const int SM_YVIRTUALSCREEN = 77;
     private const int SM_CXVIRTUALSCREEN = 78;
@@ -219,6 +255,45 @@ public static class AwakeWin32
         return SetForegroundWindow(hWnd);
     }
 
+    public static bool IsForegroundWindow(IntPtr hWnd)
+    {
+        return hWnd != IntPtr.Zero && GetForegroundWindow() == hWnd;
+    }
+
+    public static bool SetWindowBounds(IntPtr hWnd, int x, int y, int width, int height)
+    {
+        ShowWindow(hWnd, SW_RESTORE);
+        return MoveWindow(hWnd, x, y, Math.Max(1, width), Math.Max(1, height), true);
+    }
+
+    public static RECT GetPrimaryWorkArea()
+    {
+        RECT area;
+        if (SystemParametersInfo(SPI_GETWORKAREA, 0, out area, 0)) return area;
+        return new RECT { Left = 0, Top = 0, Right = GetSystemMetrics(0), Bottom = GetSystemMetrics(1) };
+    }
+
+    public static bool SendKey(ushort key)
+    {
+        INPUT[] input = new INPUT[2];
+        input[0].type = 1;
+        input[0].data.ki.wVk = key;
+        input[1].type = 1;
+        input[1].data.ki.wVk = key;
+        input[1].data.ki.dwFlags = KEYEVENTF_KEYUP;
+        return SendInput(2, input, Marshal.SizeOf(typeof(INPUT))) == 2;
+    }
+
+    public static bool SendKeyChord(ushort modifier, ushort key)
+    {
+        INPUT[] input = new INPUT[4];
+        input[0].type = 1; input[0].data.ki.wVk = modifier;
+        input[1].type = 1; input[1].data.ki.wVk = key;
+        input[2].type = 1; input[2].data.ki.wVk = key; input[2].data.ki.dwFlags = KEYEVENTF_KEYUP;
+        input[3].type = 1; input[3].data.ki.wVk = modifier; input[3].data.ki.dwFlags = KEYEVENTF_KEYUP;
+        return SendInput(4, input, Marshal.SizeOf(typeof(INPUT))) == 4;
+    }
+
     public static bool GetCursor(out POINT point)
     {
         return GetCursorPos(out point);
@@ -237,9 +312,9 @@ public static class AwakeWin32
     {
         INPUT[] input = new INPUT[1];
         input[0].type = INPUT_MOUSE;
-        input[0].mi.dx = dx;
-        input[0].mi.dy = dy;
-        input[0].mi.dwFlags = MOUSEEVENTF_MOVE;
+        input[0].data.mi.dx = dx;
+        input[0].data.mi.dy = dy;
+        input[0].data.mi.dwFlags = MOUSEEVENTF_MOVE;
         return SendInput(1, input, Marshal.SizeOf(typeof(INPUT))) == 1;
     }
 
@@ -253,13 +328,26 @@ public static class AwakeWin32
 
         INPUT[] input = new INPUT[1];
         input[0].type = INPUT_MOUSE;
-        input[0].mi.dx = absoluteX;
-        input[0].mi.dy = absoluteY;
-        input[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        input[0].data.mi.dx = absoluteX;
+        input[0].data.mi.dy = absoluteY;
+        input[0].data.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
         return SendInput(1, input, Marshal.SizeOf(typeof(INPUT))) == 1;
     }
 }
 "@
+
+# Capture the launching terminal only when the foreground handle actually belongs
+# to a terminal (or this PowerShell process). This avoids protecting an unrelated
+# app when the script is started by a scheduler or background launcher.
+$runnerCandidate = [AwakeWin32]::GetForegroundWindow()
+$runnerInfo = @([AwakeWin32]::GetVisibleWindows() | Where-Object { $_.Handle -eq $runnerCandidate })
+$script:RUNNER_WINDOW_HANDLE = [IntPtr]::Zero
+if ($runnerInfo.Count -gt 0 -and
+    ($runnerInfo[0].ProcessId -eq $PID -or
+     $runnerInfo[0].ProcessName -imatch '^(cmd|powershell|pwsh|WindowsTerminal|conhost)$')) {
+    $script:RUNNER_WINDOW_HANDLE = $runnerCandidate
+}
+$script:RUNNER_PROCESS_ID = $PID
 
 function Enable-AwakeExecutionState {
     [void][AwakeWin32]::SetThreadExecutionState(
@@ -275,6 +363,9 @@ function Clear-AwakeExecutionState {
 
 function Test-ExcludedWindow {
     param($Window)
+    if ($Window.ProcessId -eq $script:RUNNER_PROCESS_ID) { return $true }
+    if ($script:RUNNER_WINDOW_HANDLE -ne [IntPtr]::Zero -and
+        $Window.Handle -eq $script:RUNNER_WINDOW_HANDLE) { return $true }
     foreach ($excluded in $script:EXCLUDE_APPS) {
         if ($Window.ProcessName -ieq $excluded) { return $true }
         if ($Window.Title -ieq $excluded) { return $true }
@@ -292,19 +383,314 @@ function Get-AwakeWindows {
     return $filtered
 }
 
-function Invoke-RandomWindowFocus {
-    $windows = @(Get-AwakeWindows)
-    if ($windows.Count -eq 0) {
-        Write-AwakeLog "no visible windows found after excludes"
+function Set-AwakeForeground {
+    param($Window)
+    [void][AwakeWin32]::FocusWindow($Window.Handle)
+    Start-Sleep -Milliseconds 150
+    return [AwakeWin32]::IsForegroundWindow($Window.Handle)
+}
+
+function Set-AwakeWindowBounds {
+    param($Window, [int]$X, [int]$Y, [int]$Width, [int]$Height)
+    $ok = [AwakeWin32]::SetWindowBounds($Window.Handle, $X, $Y, $Width, $Height)
+    if (-not $ok) {
+        Write-AwakeLog ("  {0}: geometry set failed" -f $Window.ProcessName)
+    }
+    return $ok
+}
+
+function Invoke-MaximizeWindow {
+    param($Window)
+    $area = [AwakeWin32]::GetPrimaryWorkArea()
+    [void](Set-AwakeWindowBounds $Window $area.Left $area.Top ($area.Right - $area.Left) ($area.Bottom - $area.Top))
+    $focused = Set-AwakeForeground $Window
+    Write-AwakeLog ("action: full window -> {0} | {1}" -f $Window.ProcessName, $Window.Title)
+    if (-not $focused) {
+        Write-AwakeLog "  foreground confirmation failed; active shortcuts skipped"
+    }
+    return $focused
+}
+
+function Invoke-TileWindows {
+    param($LeftWindow, $RightWindow)
+    $area = [AwakeWin32]::GetPrimaryWorkArea()
+    $width = $area.Right - $area.Left
+    $height = $area.Bottom - $area.Top
+    $leftWidth = [Math]::Floor($width / 2)
+    [void](Set-AwakeWindowBounds $LeftWindow $area.Left $area.Top $leftWidth $height)
+    [void](Set-AwakeWindowBounds $RightWindow ($area.Left + $leftWidth) $area.Top ($width - $leftWidth) $height)
+    [void](Set-AwakeForeground $LeftWindow)
+    Write-AwakeLog ("action: tile -> {0} (left) | {1} (right)" -f $LeftWindow.ProcessName, $RightWindow.ProcessName)
+}
+
+function Test-TerminalWindow {
+    param($Window)
+    return $Window.ProcessName -imatch '^(cmd|powershell|pwsh|WindowsTerminal|conhost)$'
+}
+
+function Test-TargetForeground {
+    param($Window)
+    if ([AwakeWin32]::IsForegroundWindow($Window.Handle)) { return $true }
+    Write-AwakeLog ("  {0}: foreground changed; shortcut skipped" -f $Window.ProcessName)
+    return $false
+}
+
+function Send-AwakeKey {
+    param($Window, [int]$Key, [string]$Label)
+    if (-not (Test-TargetForeground $Window)) { return $false }
+    $ok = [AwakeWin32]::SendKey([uint16]$Key)
+    if ($ok) { Write-AwakeLog ("  {0}: {1} (synthetic)" -f $Window.ProcessName, $Label) }
+    else { Write-AwakeLog ("  {0}: {1} failed" -f $Window.ProcessName, $Label) }
+    return $ok
+}
+
+function Send-AwakeChord {
+    param($Window, [int]$Modifier, [int]$Key, [string]$Label)
+    if (-not (Test-TargetForeground $Window)) { return $false }
+    $ok = [AwakeWin32]::SendKeyChord([uint16]$Modifier, [uint16]$Key)
+    if ($ok) { Write-AwakeLog ("  {0}: {1} (synthetic)" -f $Window.ProcessName, $Label) }
+    else { Write-AwakeLog ("  {0}: {1} failed" -f $Window.ProcessName, $Label) }
+    return $ok
+}
+
+function Invoke-RandomScroll {
+    param($Window)
+    if ((Get-Random -Minimum 0 -Maximum 2) -eq 0) {
+        [void](Send-AwakeKey $Window 0x22 "scrolled PageDown")
+    } else {
+        [void](Send-AwakeKey $Window 0x21 "scrolled PageUp")
+    }
+}
+
+function ConvertFrom-VSCodeFileUri {
+    param([string]$UriText)
+    try {
+        $uri = [Uri]$UriText
+        if (-not $uri.IsFile) { return $null }
+        if (-not [string]::IsNullOrWhiteSpace($uri.Host)) {
+            $uncPath = "\\{0}{1}" -f $uri.Host, ([Uri]::UnescapeDataString($uri.AbsolutePath).Replace('/', '\'))
+            return [IO.Path]::GetFullPath($uncPath)
+        }
+        $path = [Uri]::UnescapeDataString($uri.AbsolutePath)
+        if ($path -match '^/[A-Za-z]:/') { $path = $path.Substring(1) }
+        $path = $path.Replace('/', [IO.Path]::DirectorySeparatorChar)
+        return [IO.Path]::GetFullPath($path)
+    } catch {
+        return $null
+    }
+}
+
+function Get-VSCodeWorkspaceCatalog {
+    $storageRoot = Join-Path $env:APPDATA "Code\User\workspaceStorage"
+    if (-not (Test-Path -LiteralPath $storageRoot)) { return @() }
+
+    $catalog = @()
+    $metadataFiles = @(Get-ChildItem -LiteralPath $storageRoot -Filter "workspace.json" -Recurse -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc -Descending)
+    foreach ($metadataFile in $metadataFiles) {
+        try {
+            $metadata = Get-Content -LiteralPath $metadataFile.FullName -Raw | ConvertFrom-Json
+        } catch { continue }
+
+        $roots = @()
+        $label = ""
+        if ($metadata.folder) {
+            $folder = ConvertFrom-VSCodeFileUri ([string]$metadata.folder)
+            if ($folder -and (Test-Path -LiteralPath $folder -PathType Container)) {
+                $roots = @($folder)
+                $label = Split-Path -Leaf $folder
+            }
+        } elseif ($metadata.workspace) {
+            $workspaceFile = ConvertFrom-VSCodeFileUri ([string]$metadata.workspace)
+            if (-not $workspaceFile -or -not (Test-Path -LiteralPath $workspaceFile -PathType Leaf)) { continue }
+            $label = [IO.Path]::GetFileNameWithoutExtension($workspaceFile)
+            try {
+                $workspaceText = Get-Content -LiteralPath $workspaceFile -Raw
+                $workspaceText = [regex]::Replace($workspaceText, '(?s)/\*.*?\*/', '')
+                $workspaceText = [regex]::Replace($workspaceText, '(?m)^\s*//.*$', '')
+                $workspace = $workspaceText | ConvertFrom-Json
+                foreach ($folderEntry in @($workspace.folders)) {
+                    if ($folderEntry.path) {
+                        $candidate = [string]$folderEntry.path
+                        if (-not [IO.Path]::IsPathRooted($candidate)) {
+                            $candidate = Join-Path (Split-Path -Parent $workspaceFile) $candidate
+                        }
+                        $candidate = [IO.Path]::GetFullPath($candidate)
+                        if (Test-Path -LiteralPath $candidate -PathType Container) { $roots += $candidate }
+                    } elseif ($folderEntry.uri) {
+                        $candidate = ConvertFrom-VSCodeFileUri ([string]$folderEntry.uri)
+                        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Container)) { $roots += $candidate }
+                    }
+                }
+            } catch { continue }
+        }
+
+        $roots = @($roots | Select-Object -Unique)
+        if ($roots.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($label)) {
+            $catalog += [PSCustomObject]@{ Label = $label; Roots = $roots; MetadataPath = $metadataFile.FullName }
+        }
+    }
+    return $catalog
+}
+
+function Resolve-VSCodeWorkspace {
+    param($Window)
+    $catalog = @(Get-VSCodeWorkspaceCatalog)
+    $matches = @($catalog | Where-Object {
+        $Window.Title -match ("(?i)(^| - ){0}( - Visual Studio Code)?$" -f [regex]::Escape($_.Label))
+    })
+    if ($matches.Count -eq 0) {
+        Write-AwakeLog ("  Code: no local workspace metadata matched window '{0}'" -f $Window.Title)
+        return $null
+    }
+    if ($matches.Count -gt 1) {
+        Write-AwakeLog ("  Code: multiple workspace records matched '{0}'; using most recent" -f $matches[0].Label)
+    }
+    return $matches[0]
+}
+
+function Test-VSCodeEligibleFile {
+    param([string]$Path)
+    $excludedDirectoryPattern = '[\\/](\.git|\.svn|\.hg|node_modules|vendor|dist|build|out|target|coverage|\.next|\.nuxt|\.cache|tmp|temp)[\\/]'
+    if ($Path -match $excludedDirectoryPattern) { return $false }
+
+    $fileName = [IO.Path]::GetFileName($Path)
+    $extension = [IO.Path]::GetExtension($Path)
+    $allowedNames = @('Dockerfile', 'Makefile', 'Rakefile', 'Gemfile', 'Procfile', '.gitignore', '.gitattributes', '.editorconfig', '.env.example')
+    $allowedExtensions = @(
+        '.ps1', '.psm1', '.psd1', '.sh', '.bash', '.zsh', '.fish', '.cmd', '.bat',
+        '.py', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.java', '.kt', '.kts',
+        '.cs', '.fs', '.fsx', '.go', '.rs', '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp',
+        '.php', '.rb', '.swift', '.scala', '.lua', '.r', '.sql', '.graphql', '.gql',
+        '.html', '.htm', '.css', '.scss', '.sass', '.less', '.vue', '.svelte',
+        '.xml', '.json', '.jsonc', '.yaml', '.yml', '.toml', '.ini', '.conf', '.config',
+        '.properties', '.md', '.markdown', '.txt', '.rst'
+    )
+    return ($allowedNames -contains $fileName) -or ($allowedExtensions -contains $extension)
+}
+
+function Get-FallbackWorkspaceFiles {
+    param([string]$Root)
+    $files = @()
+    $pending = New-Object System.Collections.Stack
+    $pending.Push((Get-Item -LiteralPath $Root))
+    $excludedNames = @('.git', '.svn', '.hg', 'node_modules', 'vendor', 'dist', 'build', 'out', 'target', 'coverage', '.next', '.nuxt', '.cache', 'tmp', 'temp')
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        foreach ($file in @(Get-ChildItem -LiteralPath $directory.FullName -File -ErrorAction SilentlyContinue)) {
+            if (Test-VSCodeEligibleFile $file.FullName) { $files += $file.FullName }
+        }
+        foreach ($child in @(Get-ChildItem -LiteralPath $directory.FullName -Directory -ErrorAction SilentlyContinue)) {
+            if ($excludedNames -notcontains $child.Name) { $pending.Push($child) }
+        }
+    }
+    return $files
+}
+
+function Get-VSCodeWorkspaceFiles {
+    param($Workspace)
+    $unique = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($root in @($Workspace.Roots)) {
+        $gitRoot = & git -C $root rev-parse --show-toplevel 2>$null
+        if ($LASTEXITCODE -eq 0 -and $gitRoot) {
+            foreach ($relativePath in @(& git -C $root ls-files --cached -- . 2>$null)) {
+                $path = [IO.Path]::GetFullPath((Join-Path $root $relativePath))
+                if ((Test-Path -LiteralPath $path -PathType Leaf) -and (Test-VSCodeEligibleFile $path)) {
+                    [void]$unique.Add($path)
+                }
+            }
+        } else {
+            foreach ($path in @(Get-FallbackWorkspaceFiles $root)) { [void]$unique.Add($path) }
+        }
+    }
+    return @($unique)
+}
+
+function New-VSCodeFileCycle {
+    param($Workspace, [string]$Key, [int]$PreviousCycle)
+    $files = @(Get-VSCodeWorkspaceFiles $Workspace)
+    if ($files.Count -eq 0) { return $null }
+    $take = [Math]::Min($script:VSCODE_RANDOM_FILE_CYCLE_SIZE, $files.Count)
+    $queue = @($files | Get-Random -Count $take)
+    $state = [PSCustomObject]@{ Queue = $queue; Index = 0; Cycle = ($PreviousCycle + 1); Workspace = $Workspace }
+    $script:VSCODE_FILE_CYCLES[$Key] = $state
+    Write-AwakeLog ("  Code: workspace {0} cycle {1} reset ({2} unique files)" -f $Workspace.Label, $state.Cycle, $queue.Count)
+    return $state
+}
+
+function Invoke-VSCodeRandomFile {
+    param($Window)
+    if ((Get-Random -Minimum 0 -Maximum 100) -ge $script:VSCODE_OPEN_FILE_PROBABILITY) { return }
+    if (-not (Test-TargetForeground $Window)) { return }
+
+    $cli = Get-Command code -ErrorAction SilentlyContinue
+    if (-not $cli) {
+        Write-AwakeLog "  Code: random workspace file skipped (code CLI not found)"
+        return
+    }
+    $workspace = Resolve-VSCodeWorkspace $Window
+    if (-not $workspace) { return }
+    $key = (@($workspace.Roots | ForEach-Object { [IO.Path]::GetFullPath($_).ToLowerInvariant() }) -join '|')
+    $state = $script:VSCODE_FILE_CYCLES[$key]
+    if (-not $state -or $state.Index -ge $state.Queue.Count) {
+        $previousCycle = if ($state) { $state.Cycle } else { 0 }
+        $state = New-VSCodeFileCycle $workspace $key $previousCycle
+        if (-not $state) {
+            Write-AwakeLog ("  Code: no eligible code/text files in workspace {0}" -f $workspace.Label)
+            return
+        }
+    }
+
+    while ($state.Index -lt $state.Queue.Count) {
+        $path = [string]$state.Queue[$state.Index]
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            $state.Index++
+            continue
+        }
+        if (-not (Test-TargetForeground $Window)) { return }
+        try {
+            $quotedPath = '"{0}"' -f $path.Replace('"', '\"')
+            $helper = Start-Process -FilePath $cli.Source -ArgumentList @('--reuse-window', $quotedPath) -WindowStyle Hidden -PassThru -ErrorAction Stop
+        } catch {
+            $helper = $null
+        }
+        if ($helper) {
+            $state.Index++
+            $root = @($workspace.Roots | Where-Object { $path.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) } | Sort-Object Length -Descending)[0]
+            $relative = if ($root) { $path.Substring($root.Length).TrimStart('\', '/') } else { [IO.Path]::GetFileName($path) }
+            Write-AwakeLog ("  Code: opened {0} (cycle {1}, {2}/{3}, unique)" -f $relative, $state.Cycle, $state.Index, $state.Queue.Count)
+        } else {
+            Write-AwakeLog ("  Code: CLI failed to open {0}" -f $path)
+        }
+        return
+    }
+}
+
+function Invoke-DeepWindowAction {
+    param($Window)
+    if (-not $script:ENABLE_ALL) { return }
+    if (Test-TerminalWindow $Window) {
+        Write-AwakeLog ("  {0}: terminal focus only; shortcuts disabled" -f $Window.ProcessName)
         return
     }
 
-    $window = $windows | Get-Random
-    $ok = [AwakeWin32]::FocusWindow($window.Handle)
-    if ($ok) {
-        Write-AwakeLog ("action: focus -> {0} | {1}" -f $window.ProcessName, $window.Title)
-    } else {
-        Write-AwakeLog ("action: focus attempted -> {0} | {1} (Windows may deny foreground steal)" -f $window.ProcessName, $window.Title)
+    switch -Regex ($Window.ProcessName) {
+        '^chrome$' {
+            [void](Send-AwakeChord $Window 0x11 0x09 "cycled browser tab with Ctrl+Tab")
+            Invoke-RandomScroll $Window
+            break
+        }
+        '^Postman$' {
+            [void](Send-AwakeChord $Window 0x11 0x09 "cycled request tab with Ctrl+Tab")
+            Invoke-RandomScroll $Window
+            break
+        }
+        '^Code$' {
+            [void](Send-AwakeChord $Window 0x11 0x22 "cycled editor with Ctrl+PageDown")
+            Invoke-RandomScroll $Window
+            Invoke-VSCodeRandomFile $Window
+            break
+        }
     }
 }
 
@@ -362,13 +748,26 @@ function Sleep-Random {
 function Show-Probe {
     Enable-AwakeExecutionState
     Write-AwakeLog "=== awake Windows capability probe ==="
-    Write-Host ("{0,-20} {1,-6} {2}" -f "PROCESS", "PID", "TITLE")
-    Write-Host ("{0,-20} {1,-6} {2}" -f "---", "---", "---")
+    Write-Host ("{0,-20} {1,-6} {2,-10} {3,-25} {4}" -f "PROCESS", "PID", "BEHAVIOR", "DETAIL", "TITLE")
+    Write-Host ("{0,-20} {1,-6} {2,-10} {3,-25} {4}" -f "---", "---", "---", "---", "---")
     foreach ($window in @(Get-AwakeWindows)) {
-        Write-Host ("{0,-20} {1,-6} {2}" -f $window.ProcessName, $window.ProcessId, $window.Title)
+        $behavior = "window"
+        $detail = "-"
+        if (Test-TerminalWindow $window) { $behavior = "focus-only" }
+        elseif ($window.ProcessName -imatch '^(chrome|Postman|Code)$') {
+            $behavior = "active"
+            if ($window.ProcessName -ieq 'Code') {
+                $workspace = Resolve-VSCodeWorkspace $window
+                $cliAvailable = [bool](Get-Command code -ErrorAction SilentlyContinue)
+                if ($workspace) { $detail = "workspace={0}; cli={1}" -f $workspace.Label, $cliAvailable }
+                else { $detail = "workspace=unresolved; cli={0}" -f $cliAvailable }
+            }
+        }
+        Write-Host ("{0,-20} {1,-6} {2,-10} {3,-25} {4}" -f $window.ProcessName, $window.ProcessId, $behavior, $detail, $window.Title)
     }
     Write-Host ""
-    Write-AwakeLog "Win32: SetThreadExecutionState available; SendInput available; SetForegroundWindow available."
+    Write-AwakeLog "Win32: sleep prevention, focus, geometry, keyboard/mouse SendInput available."
+    Write-AwakeLog ("protected runner window handle: {0}" -f $script:RUNNER_WINDOW_HANDLE)
     Clear-AwakeExecutionState
 }
 
@@ -390,14 +789,33 @@ function Invoke-JiggleTest {
 
 function Invoke-RunLoop {
     Write-AwakeLog "awake started (pid $PID). Ctrl+C to stop."
-    Write-AwakeLog ("sleep {0}-{1}s | active-mode (ENABLE_ALL) {2}" -f $script:MIN_SLEEP, $script:MAX_SLEEP, $script:ENABLE_ALL)
+    Write-AwakeLog ("sleep {0}-{1}s | tile {2}% | active-mode (ENABLE_ALL) {3}" -f $script:MIN_SLEEP, $script:MAX_SLEEP, $script:TILE_PROBABILITY, $script:ENABLE_ALL)
     Write-AwakeLog ("excluding apps/windows: {0}" -f ($script:EXCLUDE_APPS -join ", "))
+    Write-AwakeLog ("protecting runner window handle: {0}" -f $script:RUNNER_WINDOW_HANDLE)
 
     try {
         Enable-AwakeExecutionState
         while ($true) {
             Enable-AwakeExecutionState
-            Invoke-RandomWindowFocus
+            $windows = @(Get-AwakeWindows)
+            if ($windows.Count -eq 0) {
+                Write-AwakeLog "no visible windows found after excludes"
+                Sleep-Random
+                continue
+            }
+
+            $roll = Get-Random -Minimum 0 -Maximum 100
+            if ($roll -lt $script:TILE_PROBABILITY -and $windows.Count -ge 2) {
+                $left = $windows | Get-Random
+                $rightCandidates = @($windows | Where-Object { $_.Handle -ne $left.Handle })
+                $right = $rightCandidates | Get-Random
+                Invoke-TileWindows $left $right
+            } else {
+                $window = $windows | Get-Random
+                if (Invoke-MaximizeWindow $window) {
+                    Invoke-DeepWindowAction $window
+                }
+            }
             Invoke-ActiveMouse
             Sleep-Random
         }
@@ -420,7 +838,10 @@ USAGE:
 
 TUNABLES (environment variables):
   MIN_SLEEP / MAX_SLEEP   random wait per action (default 30-60s)
-  ENABLE_ALL              true = move mouse with SendInput each tick (default false)
+  TILE_PROBABILITY        chance to tile two windows instead of maximizing (default 25)
+  ENABLE_ALL              true = app shortcuts + mouse movement (default false)
+  VSCODE_OPEN_FILE_PROBABILITY  chance of Quick Open after VS Code focus (default 30)
+  VSCODE_RANDOM_FILE_CYCLE_SIZE unique workspace files per cycle (default 20)
   MOUSE_JIGGLE_PX         nudge size for --jiggle-test (default 1)
   AWAKE_EXCLUDE_APPS      comma-separated process/window names to skip
   AWAKE_LOG_FILE          also append logs to this file
@@ -430,7 +851,10 @@ EXAMPLES:
   `$env:MIN_SLEEP="3"; `$env:MAX_SLEEP="6"; powershell -ExecutionPolicy Bypass -File .\awake.ps1
 
 NOTES:
-  Windows uses Win32 SendInput for mouse activity; no extra install is required.
+  Chrome and Postman cycle tabs and scroll. VS Code cycles editors, scrolls,
+  and may open a unique random workspace file. These require ENABLE_ALL=true.
+  Terminals are focus-only and never receive synthetic keystrokes.
+  Windows uses Win32 SendInput; no extra install is required.
   The script prevents normal display/system sleep while it is running.
 "@
 }

@@ -35,16 +35,20 @@ MAX_SLEEP="${MAX_SLEEP:-60}"                  # max seconds between actions
 TILE_PROBABILITY="${TILE_PROBABILITY:-25}"    # percent chance a tick tiles two apps side-by-side; otherwise full-window a single app
 MENU_BAR_INSET="${MENU_BAR_INSET:-25}"        # px reserved at top of screen when tiling
 # Single master switch. true = the full active mode: Safari tab switching,
-# synthetic keystrokes (Safari/VS Code scroll, Ghostty/VS Code/DBeaver tab cycle,
-# VS Code Cmd+P file open), and random cursor movement. false = focus/tile/window
+# synthetic keystrokes (Safari/VS Code scroll, Ghostty/VS Code/DBeaver tab cycle),
+# unique VS Code workspace-file opening, and random cursor movement. false = focus/tile/window
 # rotation only. Cursor movement needs cliclick (brew install cliclick).
 ENABLE_ALL="${ENABLE_ALL:-false}"
-VSCODE_OPEN_FILE_PROBABILITY="${VSCODE_OPEN_FILE_PROBABILITY:-30}"  # % of VS Code focuses that open a random recent file via Cmd+P
-VSCODE_OPEN_FILE_MAX_STEPS="${VSCODE_OPEN_FILE_MAX_STEPS:-8}"       # max down-arrows into the Cmd+P recent list before Enter
+VSCODE_OPEN_FILE_PROBABILITY="${VSCODE_OPEN_FILE_PROBABILITY:-30}"  # % of VS Code focuses that open a unique workspace file
+VSCODE_RANDOM_FILE_CYCLE_SIZE="${VSCODE_RANDOM_FILE_CYCLE_SIZE:-20}" # unique workspace files per shuffle cycle
 MOUSE_JIGGLE_PX="${MOUSE_JIGGLE_PX:-1}"        # pixels to nudge before restoring the cursor (jiggle fallback / --jiggle-test)
 EXCLUDE_APPS=("Terminal")     # app/process names never selected
 AWAKE_EXCLUDE_APPS="${AWAKE_EXCLUDE_APPS:-}"   # comma-separated extra app/process names to never select
 LOG_FILE="${AWAKE_LOG_FILE:-}"   # empty => stdout only
+VSCODE_STATE_DIR=""               # ephemeral per-workspace queues; created lazily
+case "$VSCODE_RANDOM_FILE_CYCLE_SIZE" in
+  ''|*[!0-9]*|0) VSCODE_RANDOM_FILE_CYCLE_SIZE=20 ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -284,33 +288,203 @@ EOF
   fi
 }
 
-# Open a random recent file in VS Code: Cmd+P, arrow down a random count, Enter.
-# Cmd+P only navigates the quick-open palette; it never edits content. The only
-# misfire (palette didn't open) is the arrows moving the cursor (harmless) and a
-# single stray newline from Enter — undoable with Cmd+Z. Synthetic input, gated
-# by ENABLE_ALL. Esc first to dismiss any stray palette/modal.
-vscode_open_random_file() {
-  local app="$1" steps
-  [ "$ENABLE_ALL" = true ] || return 0
-  steps=$(( RANDOM % VSCODE_OPEN_FILE_MAX_STEPS + 1 ))   # 1..MAX down-arrows
-  if osascript >/dev/null 2>&1 <<EOF
-tell application "System Events"
-  set frontmost of process "$app" to true
-  key code 53            -- Esc: clear any open palette/modal first
-  keystroke "p" using command down
-  delay 0.4              -- let the quick-open palette render
-  repeat $steps times
-    key code 125         -- Down arrow
-    delay 0.05
-  end repeat
-  key code 36            -- Return: open the highlighted file
-end tell
-EOF
-  then
-    log "  $app: opened random recent file via Cmd+P (+$steps, synthetic)"
+# Resolve the front VS Code window to local workspace roots using VS Code's own
+# workspaceStorage metadata. Output is: label<TAB>root1<TAB>root2...
+vscode_workspace_info() {
+  local app="$1"
+  AWAKE_VSCODE_APP="$app" osascript -l JavaScript 2>/dev/null <<'JXA'
+ObjC.import('Foundation');
+function js(value) { return value === null || value === undefined ? '' : ObjC.unwrap(value); }
+function readText(path) {
+  var error = Ref();
+  var text = $.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, error);
+  return text ? js(text) : '';
+}
+function localPath(uriText) {
+  if (!uriText || uriText.indexOf('file:') !== 0) return '';
+  var url = $.NSURL.URLWithString(uriText);
+  return url ? js(url.path.stringByStandardizingPath) : '';
+}
+function parseJsonc(text) {
+  return JSON.parse(text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, ''));
+}
+var env = $.NSProcessInfo.processInfo.environment;
+var appName = js(env.objectForKey('AWAKE_VSCODE_APP'));
+var title = '';
+try {
+  var proc = Application('System Events').processes.byName(appName);
+  if (!proc.exists() || proc.windows.length === 0) throw new Error('VS Code has no window');
+  title = proc.windows[0].name();
+} catch (e) { throw new Error('Could not read the front VS Code window'); }
+
+var home = js(env.objectForKey('HOME'));
+var storage = home + '/Library/Application Support/Code/User/workspaceStorage';
+var fm = $.NSFileManager.defaultManager;
+var error = Ref();
+var entries = fm.contentsOfDirectoryAtPathError(storage, error);
+if (!entries) throw new Error('VS Code workspace storage is unavailable');
+var candidates = [];
+for (var i = 0; i < entries.count; i++) {
+  var metaPath = storage + '/' + js(entries.objectAtIndex(i)) + '/workspace.json';
+  var raw = readText(metaPath);
+  if (!raw) continue;
+  try {
+    var meta = JSON.parse(raw), roots = [], label = '';
+    if (meta.folder) {
+      var root = localPath(meta.folder);
+      if (root) { roots.push(root); label = root.split('/').pop(); }
+    } else if (meta.workspace) {
+      var workspaceFile = localPath(meta.workspace);
+      if (!workspaceFile) continue;
+      label = workspaceFile.split('/').pop().replace(/\.code-workspace$/i, '');
+      var workspace = parseJsonc(readText(workspaceFile));
+      var base = workspaceFile.substring(0, workspaceFile.lastIndexOf('/'));
+      (workspace.folders || []).forEach(function(folder) {
+        var root = folder.uri ? localPath(folder.uri) : (folder.path || '');
+        if (root && root.charAt(0) !== '/') root = js($(base + '/' + root).stringByStandardizingPath);
+        if (root) roots.push(root);
+      });
+    }
+    if (roots.length && label && (title === label + ' - Visual Studio Code' || title.indexOf(' - ' + label + ' - Visual Studio Code') >= 0)) {
+      var attrs = fm.attributesOfItemAtPathError(metaPath, Ref());
+      var modified = attrs ? ObjC.unwrap(attrs.objectForKey($.NSFileModificationDate).timeIntervalSince1970) : 0;
+      candidates.push({label: label, roots: roots, modified: modified});
+    }
+  } catch (e) {}
+}
+if (!candidates.length) throw new Error('No local workspace matched the front window');
+candidates.sort(function(a, b) { return b.modified - a.modified; });
+console.log([candidates[0].label].concat(candidates[0].roots).join('\t'));
+JXA
+}
+
+vscode_ensure_state_dir() {
+  [ -n "$VSCODE_STATE_DIR" ] && [ -d "$VSCODE_STATE_DIR" ] && return 0
+  VSCODE_STATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/awake-vscode.XXXXXX") \
+    || { log "  Code: could not create temporary queue state"; return 1; }
+}
+
+vscode_cleanup_state() {
+  case "$VSCODE_STATE_DIR" in
+    */awake-vscode.*) [ -d "$VSCODE_STATE_DIR" ] && rm -rf -- "$VSCODE_STATE_DIR" ;;
+  esac
+  VSCODE_STATE_DIR=""
+}
+
+vscode_state_key() {
+  if command -v md5 >/dev/null 2>&1; then
+    printf '%s' "$1" | md5 -q
   else
-    log "  $app: Cmd+P file open failed"
+    printf '%s' "$1" | cksum | awk '{print $1}'
   fi
+}
+
+vscode_file_is_eligible() {
+  local path="$1" name ext lower
+  case "$path" in
+    */.git/*|*/.svn/*|*/.hg/*|*/node_modules/*|*/vendor/*|*/dist/*|*/build/*|*/out/*|*/target/*|*/coverage/*|*/.next/*|*/.nuxt/*|*/.cache/*|*/tmp/*|*/temp/*) return 1 ;;
+  esac
+  name=${path##*/}
+  lower=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
+  ext=".${lower##*.}"
+  case "$name" in
+    Dockerfile|Makefile|Rakefile|Gemfile|Procfile|.gitignore|.gitattributes|.editorconfig|.env.example) return 0 ;;
+  esac
+  case "$ext" in
+    .ps1|.psm1|.psd1|.sh|.bash|.zsh|.fish|.cmd|.bat|.py|.js|.jsx|.mjs|.cjs|.ts|.tsx|.java|.kt|.kts|.cs|.fs|.fsx|.go|.rs|.c|.cc|.cpp|.cxx|.h|.hpp|.php|.rb|.swift|.scala|.lua|.r|.sql|.graphql|.gql|.html|.htm|.css|.scss|.sass|.less|.vue|.svelte|.xml|.json|.jsonc|.yaml|.yml|.toml|.ini|.conf|.config|.properties|.md|.markdown|.txt|.rst) return 0 ;;
+  esac
+  return 1
+}
+
+# Write unique absolute eligible paths for tab-delimited workspace roots.
+vscode_collect_files() {
+  local roots="$1" output="$2" old_ifs root rel path
+  : > "$output"
+  old_ifs=$IFS
+  IFS=$(printf '\t')
+  for root in $roots; do
+    IFS=$old_ifs
+    [ -d "$root" ] || { IFS=$(printf '\t'); continue; }
+    if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      git -C "$root" ls-files --cached -- . 2>/dev/null | while IFS= read -r rel; do
+        path="$root/$rel"
+        [ -f "$path" ] && vscode_file_is_eligible "$path" && printf '%s\n' "$path"
+      done >> "$output"
+    else
+      find "$root" \( -name .git -o -name .svn -o -name .hg -o -name node_modules -o -name vendor -o -name dist -o -name build -o -name out -o -name target -o -name coverage -o -name .next -o -name .nuxt -o -name .cache -o -name tmp -o -name temp \) -prune -o -type f -print 2>/dev/null |
+        while IFS= read -r path; do
+          vscode_file_is_eligible "$path" && printf '%s\n' "$path"
+        done >> "$output"
+    fi
+    IFS=$(printf '\t')
+  done
+  IFS=$old_ifs
+  LC_ALL=C sort -u "$output" -o "$output"
+}
+
+vscode_reset_cycle() {
+  local label="$1" roots="$2" key="$3" pool queue cycle count
+  pool="$VSCODE_STATE_DIR/$key.pool"
+  queue="$VSCODE_STATE_DIR/$key.queue"
+  vscode_collect_files "$roots" "$pool"
+  count=$(wc -l < "$pool" | tr -d ' ')
+  [ "${count:-0}" -gt 0 ] || { log "  Code: no eligible code/text files in workspace $label"; return 1; }
+  awk 'BEGIN { srand() } { print rand() "\t" $0 }' "$pool" | LC_ALL=C sort -n | cut -f2- | head -n "$VSCODE_RANDOM_FILE_CYCLE_SIZE" > "$queue"
+  cycle=0
+  [ -f "$VSCODE_STATE_DIR/$key.cycle" ] && cycle=$(sed -n '1p' "$VSCODE_STATE_DIR/$key.cycle")
+  cycle=$(( cycle + 1 ))
+  printf '%s\n' "$cycle" > "$VSCODE_STATE_DIR/$key.cycle"
+  printf '0\n' > "$VSCODE_STATE_DIR/$key.index"
+  count=$(wc -l < "$queue" | tr -d ' ')
+  log "  Code: workspace $label cycle $cycle reset ($count unique files)"
+}
+
+vscode_relative_path() {
+  local path="$1" roots="$2" old_ifs root
+  old_ifs=$IFS
+  IFS=$(printf '\t')
+  for root in $roots; do
+    IFS=$old_ifs
+    case "$path" in "$root"/*) printf '%s' "${path#"$root"/}"; return 0 ;; esac
+    IFS=$(printf '\t')
+  done
+  IFS=$old_ifs
+  printf '%s' "${path##*/}"
+}
+
+# Open one unique file from the active workspace. Queue state is ephemeral and
+# independent per workspace; no keyboard input or file modification is involved.
+vscode_open_random_file() {
+  local app="$1" info tab label roots key queue index total path cycle relative
+  [ "$ENABLE_ALL" = true ] || return 0
+  info=$(vscode_workspace_info "$app") || { log "  $app: local workspace could not be resolved; file open skipped"; return 0; }
+  tab=$(printf '\t')
+  label=${info%%"$tab"*}
+  roots=${info#*"$tab"}
+  [ "$roots" != "$info" ] || { log "  $app: workspace has no local roots"; return 0; }
+  vscode_ensure_state_dir || return 0
+  key=$(vscode_state_key "$roots")
+  queue="$VSCODE_STATE_DIR/$key.queue"
+  index=0
+  [ -f "$VSCODE_STATE_DIR/$key.index" ] && index=$(sed -n '1p' "$VSCODE_STATE_DIR/$key.index")
+  total=0
+  [ -f "$queue" ] && total=$(wc -l < "$queue" | tr -d ' ')
+  if [ "${index:-0}" -ge "${total:-0}" ]; then
+    vscode_reset_cycle "$label" "$roots" "$key" || return 0
+    index=0
+    total=$(wc -l < "$queue" | tr -d ' ')
+  fi
+  path=$(sed -n "$(( index + 1 ))p" "$queue")
+  [ -f "$path" ] || { printf '%s\n' "$(( index + 1 ))" > "$VSCODE_STATE_DIR/$key.index"; return 0; }
+  if ! osascript -e "tell application \"System Events\" to get frontmost of process \"$app\"" 2>/dev/null | grep -qx true; then
+    log "  $app: foreground changed; workspace file open skipped"
+    return 0
+  fi
+  /usr/bin/open -a "Visual Studio Code" "$path" >/dev/null 2>&1 &
+  printf '%s\n' "$(( index + 1 ))" > "$VSCODE_STATE_DIR/$key.index"
+  cycle=$(sed -n '1p' "$VSCODE_STATE_DIR/$key.cycle")
+  relative=$(vscode_relative_path "$path" "$roots")
+  log "  $app: opened $relative (cycle $cycle, $(( index + 1 ))/$total, unique)"
 }
 
 # ---------------------------------------------------------------------------
@@ -429,7 +603,7 @@ _probe_geometry() {
 
 probe() {
   log "=== awake capability probe ==="
-  local running line app isrun wc tabs geo
+  local running line app isrun wc tabs geo info tab label roots pool count
   if ! running=$(list_visible_apps); then
     log "ERROR: could not list visible apps via System Events."
     log "Grant Accessibility permission to the terminal app running this script, then retry."
@@ -451,6 +625,26 @@ probe() {
   log "TABS column = native tabs via AppleScript dictionary (Safari only)."
   log "'n/a' = app has no scripting dictionary; '-' = not running."
   log "GEOMETRY 'ok' = window position/size is settable (tiling works)."
+  for app in "Code" "Visual Studio Code"; do
+    if printf '%s\n' "$running" | grep -qxF "$app"; then
+      info=$(vscode_workspace_info "$app")
+      if [ -z "$info" ]; then
+        log "VS Code workspace: unresolved or remote-only"
+      else
+        tab=$(printf '\t')
+        label=${info%%"$tab"*}
+        roots=${info#*"$tab"}
+        if vscode_ensure_state_dir; then
+          pool="$VSCODE_STATE_DIR/probe.pool"
+          vscode_collect_files "$roots" "$pool"
+          count=$(wc -l < "$pool" | tr -d ' ')
+          log "VS Code workspace: $label | eligible code/text files: ${count:-0}"
+        fi
+      fi
+      break
+    fi
+  done
+  vscode_cleanup_state
 }
 
 # ---------------------------------------------------------------------------
@@ -488,7 +682,7 @@ jiggle_test() {
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
-cleanup() { echo; log "awake stopped."; exit 0; }
+cleanup() { echo; vscode_cleanup_state; log "awake stopped."; exit 0; }
 
 run_loop() {
   trap cleanup INT TERM
@@ -547,10 +741,10 @@ TUNABLES (edit the Config block at the top of the script):
   ENABLE_ALL                   single master switch (default false). true = full
                                active mode: Safari tab switching, synthetic keystrokes
                                (Safari/VS Code scroll, Ghostty/VS Code/DBeaver tab
-                               cycle, VS Code Cmd+P file open), and random cursor
+                               cycle), unique VS Code workspace files, and random cursor
                                movement (needs cliclick: brew install cliclick)
-  VSCODE_OPEN_FILE_PROBABILITY % of VS Code focuses that open a random file (default 30)
-  VSCODE_OPEN_FILE_MAX_STEPS   max down-arrows into the Cmd+P recent list (default 8)
+  VSCODE_OPEN_FILE_PROBABILITY % of VS Code focuses that open a workspace file (default 30)
+  VSCODE_RANDOM_FILE_CYCLE_SIZE unique files per workspace cycle (default 20)
   MOUSE_JIGGLE_PX              nudge size for the jiggle fallback / --jiggle-test (default 1)
   EXCLUDE_APPS                 app names to never select (default: Terminal)
   AWAKE_EXCLUDE_APPS           comma-separated extra app names to never select

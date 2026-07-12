@@ -1,8 +1,32 @@
 # Capability map
 
-How far `awake.sh` can drive each app, by control layer. The **Predicted** column
-is the expectation going in; fill **Observed** by running `./awake.sh --probe` on
-your Mac (with the apps open) and watching the rotation logs.
+How far each platform script can drive an app, by control layer. The macOS
+**Predicted** column is the expectation going in; fill **Observed** by running
+`./awake.sh --probe` on your Mac and watching the rotation logs.
+
+## Windows capability map
+
+`awake.ps1 --probe` lists every eligible visible window and labels its behavior.
+All visible applications participate in focus, maximize, and tiling; active-mode
+shortcuts are limited to recognized targets.
+
+| App | Focus/window | Tabs | Scroll | File open | Safety |
+|---|---|---|---|---|---|
+| **Chrome** | Win32 | `Ctrl+Tab` | Page keys | n/a | Foreground verified |
+| **Postman** | Win32 | `Ctrl+Tab` | Page keys | n/a | Foreground verified |
+| **VS Code** | Win32 | `Ctrl+PageDown` | Page keys | Unique workspace queue via CLI | Foreground verified |
+| **CMD / PowerShell / Windows Terminal** | Win32 | Disabled | Disabled | n/a | Focus-only |
+
+The exact terminal window that launched `awake.ps1` is excluded by window handle;
+other terminals remain eligible. All keyboard and mouse input is opt-in through
+`ENABLE_ALL=true`.
+
+Windows resolves each VS Code window through its local workspace metadata, builds
+a code/text-only file pool, and opens each selected path at most once per cycle.
+Cycles are independent per workspace and remain in memory only. Remote-only or
+unresolved workspaces are skipped safely.
+
+## macOS capability map
 
 ## Control layers
 
@@ -27,8 +51,9 @@ path · *hotkey only* = reachable only by sending the app's own keyboard shortcu
 (synthetic input, gated behind the `ENABLE_ALL` master switch).
 
 Beyond tabs, the same synthetic-keystroke surface (also under `ENABLE_ALL`) drives
-**scrolling** in Safari and VS Code via Page Up/Down, and an occasional VS Code
-**`Cmd+P` random-file open**. Ghostty is held to tab cycling only — no keystrokes
+**scrolling** in Safari and VS Code via Page Up/Down. VS Code file opening uses a
+per-workspace shuffled queue of unique code/text paths and macOS's built-in `open`
+command, not keyboard input. Ghostty is held to tab cycling only — no keystrokes
 are sent into terminal content, since the script can't tell vim from a shell in
 the focused tab.
 
