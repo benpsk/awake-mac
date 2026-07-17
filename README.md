@@ -13,7 +13,8 @@ a live capability map so you can see exactly what each app on *your* machine all
 maximizes or tiles them, and prevents normal system/display sleep while running.
 In `ENABLE_ALL=true` mode it adds Chrome/Postman tab switching and scrolling,
 VS Code editor/scroll/unique workspace-file actions, and cursor movement via Win32 `SendInput`.
-CMD, PowerShell, and Windows Terminal remain focus-only.
+PowerShell windows are excluded from rotation. CMD and other Windows Terminal
+sessions remain focus-only.
 
 > This is a capability demo. It does **not** fake user input to deceive anyone.
 > Synthetic keystrokes and cursor movement are **off by default** and clearly
@@ -115,11 +116,13 @@ Windows active-mode mappings:
 | Chrome | `Ctrl+Tab`, then `Page Up` or `Page Down` |
 | Postman | `Ctrl+Tab`, then `Page Up` or `Page Down` |
 | VS Code | `Ctrl+PageDown`, scrolling, and occasional unique workspace-file opening |
-| CMD / PowerShell / Windows Terminal | Focus only; no synthetic keystrokes |
+| PowerShell / pwsh / PowerShell ISE | Excluded from rotation |
+| CMD / other Windows Terminal sessions | Focus only; no synthetic keystrokes |
 
 Before sending a shortcut, the Windows script confirms that the intended window
-is still foreground. It protects the terminal window that launched the script,
-while allowing other terminal windows to participate in rotation.
+is still foreground. It excludes identifiable PowerShell windows and protects the
+exact terminal window that launched the script. CMD and other terminal windows
+can still participate in focus-only rotation.
 
 Cursor movement needs `cliclick` (`brew install cliclick`); without it that one
 macOS action logs a skip and everything else still runs. Windows has no external
@@ -145,7 +148,7 @@ for either script:
 | `VSCODE_OPEN_FILE_PROBABILITY` | `30` | % of VS Code focuses that open a unique workspace file. |
 | `VSCODE_RANDOM_FILE_CYCLE_SIZE` | `20` | Unique code/text files opened per workspace before reshuffling. |
 | `MOUSE_JIGGLE_PX` | `1` | Nudge size (px) for the jiggle fallback and `--jiggle-test`. |
-| `EXCLUDE_APPS` | platform default | Built-in names to never select. macOS excludes `Terminal`; Windows excludes shell-only surfaces and protects the exact runner window. |
+| `EXCLUDE_APPS` | platform default | Built-in names to never select. macOS excludes `Terminal`; Windows excludes PowerShell and shell-only surfaces and protects the exact runner window. |
 | `AWAKE_EXCLUDE_APPS` (env) | unset | Comma-separated extra app/process/window names to never select, for example `AWAKE_EXCLUDE_APPS="Finder,Music" ./awake.sh`. |
 | `AWAKE_LOG_FILE` (env) | unset | Also append timestamped logs to this file |
 

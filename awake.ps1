@@ -44,6 +44,7 @@ $script:VSCODE_RANDOM_FILE_CYCLE_SIZE = Get-EnvInt "VSCODE_RANDOM_FILE_CYCLE_SIZ
 $script:MOUSE_JIGGLE_PX = Get-EnvInt "MOUSE_JIGGLE_PX" 1
 $script:LOG_FILE = [Environment]::GetEnvironmentVariable("AWAKE_LOG_FILE")
 $script:EXCLUDE_APPS = @("Program Manager", "Microsoft Text Input Application", "TextInputHost")
+$script:POWERSHELL_PROCESS_NAMES = @("powershell", "pwsh", "powershell_ise")
 
 $extraExcludes = [Environment]::GetEnvironmentVariable("AWAKE_EXCLUDE_APPS")
 if (-not [string]::IsNullOrWhiteSpace($extraExcludes)) {
@@ -361,11 +362,32 @@ function Clear-AwakeExecutionState {
     [void][AwakeWin32]::SetThreadExecutionState([AwakeWin32]::ES_CONTINUOUS)
 }
 
+function Test-PowerShellWindow {
+    param($Window)
+
+    # Classic Windows PowerShell, PowerShell 7+, and PowerShell ISE own their
+    # window directly in some hosts.
+    if ($script:POWERSHELL_PROCESS_NAMES -icontains $Window.ProcessName) {
+        return $true
+    }
+
+    # Console Host and Windows Terminal own the top-level HWND on behalf of the
+    # shell. Limit title matching to known terminal hosts so an unrelated app
+    # displaying a document or page about PowerShell is not excluded.
+    if ($Window.ProcessName -imatch '^(conhost|WindowsTerminal|OpenConsole)$' -and
+        $Window.Title -imatch '(^|[^A-Za-z0-9])(Windows\s+PowerShell|PowerShell|pwsh)([^A-Za-z0-9]|$)') {
+        return $true
+    }
+
+    return $false
+}
+
 function Test-ExcludedWindow {
     param($Window)
     if ($Window.ProcessId -eq $script:RUNNER_PROCESS_ID) { return $true }
     if ($script:RUNNER_WINDOW_HANDLE -ne [IntPtr]::Zero -and
         $Window.Handle -eq $script:RUNNER_WINDOW_HANDLE) { return $true }
+    if (Test-PowerShellWindow $Window) { return $true }
     foreach ($excluded in $script:EXCLUDE_APPS) {
         if ($Window.ProcessName -ieq $excluded) { return $true }
         if ($Window.Title -ieq $excluded) { return $true }
@@ -791,6 +813,7 @@ function Invoke-RunLoop {
     Write-AwakeLog "awake started (pid $PID). Ctrl+C to stop."
     Write-AwakeLog ("sleep {0}-{1}s | tile {2}% | active-mode (ENABLE_ALL) {3}" -f $script:MIN_SLEEP, $script:MAX_SLEEP, $script:TILE_PROBABILITY, $script:ENABLE_ALL)
     Write-AwakeLog ("excluding apps/windows: {0}" -f ($script:EXCLUDE_APPS -join ", "))
+    Write-AwakeLog "excluding PowerShell windows: powershell, pwsh, PowerShell ISE, and identified terminal-hosted sessions"
     Write-AwakeLog ("protecting runner window handle: {0}" -f $script:RUNNER_WINDOW_HANDLE)
 
     try {
@@ -851,6 +874,7 @@ EXAMPLES:
   `$env:MIN_SLEEP="3"; `$env:MAX_SLEEP="6"; powershell -ExecutionPolicy Bypass -File .\awake.ps1
 
 NOTES:
+  PowerShell windows are excluded from rotation. CMD remains focus-only.
   Chrome and Postman cycle tabs and scroll. VS Code cycles editors, scrolls,
   and may open a unique random workspace file. These require ENABLE_ALL=true.
   Terminals are focus-only and never receive synthetic keystrokes.
